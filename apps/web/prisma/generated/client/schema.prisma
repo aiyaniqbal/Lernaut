@@ -1,0 +1,141 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Core Identity ────────────────────────────────────────────────────────────
+
+model User {
+  id                 String   @id @default(uuid())
+  createdAt          DateTime @default(now())
+  displayName        String   @default("Learner")
+  timezone           String   @default("UTC")
+  // Progression aggregates (single source of truth = XpTransaction ledger)
+  lifetimeXP         Int      @default(0)
+  currentLevel       Int      @default(1)
+  currentStreak      Int      @default(0)
+  longestStreak      Int      @default(0)
+  latestActivityDate String? // ISO date string "YYYY-MM-DD" in user's local tz
+
+  // Relations
+  profile          Profile?
+  xpTransactions   XpTransaction[]
+  dailyActivities  DailyActivity[]
+  lessonProgress   LessonProgress[]
+  userAchievements UserAchievement[]
+  missionLogs      MissionLog[] // keep legacy TaskManager compat
+}
+
+// ─── Legacy Profile (kept for backward compatibility) ─────────────────────────
+
+model Profile {
+  id         String       @id @default(uuid())
+  userId     String       @unique
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  username   String?
+  totalXP    Int          @default(0)
+  level      Int          @default(1)
+  streakDays Int          @default(0)
+  missions   MissionLog[]
+}
+
+// ─── Legacy Mission Log (kept for TaskManager) ────────────────────────────────
+
+model MissionLog {
+  id        String   @id @default(uuid())
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missionId String
+  xpGranted Int
+  createdAt DateTime @default(now())
+}
+
+// ─── XP Transaction Ledger ───────────────────────────────────────────────────
+
+model XpTransaction {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType      String // "lesson_complete" | "quiz_submit" | "daily_goal" | "achievement"
+  xpAmount       Int
+  sourceType     String? // "lesson" | "quiz" | "achievement" | "mission"
+  sourceId       String? // lesson_id, quiz_id, achievement_id
+  idempotencyKey String   @unique // prevents duplicate awards
+  metadata       String? // JSON string for extra context
+  description    String? // Human-readable: "Completed 'Process States'"
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// ─── Daily Activity ──────────────────────────────────────────────────────────
+
+model DailyActivity {
+  id                      String   @id @default(uuid())
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  localActivityDate       String // "YYYY-MM-DD" in user's local timezone
+  qualifyingActivityCount Int      @default(0)
+  lessonsCompleted        Int      @default(0)
+  quizzesCompleted        Int      @default(0)
+  xpEarned                Int      @default(0)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@unique([userId, localActivityDate])
+  @@index([userId])
+}
+
+// ─── Lesson Progress ─────────────────────────────────────────────────────────
+
+model LessonProgress {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lessonId    String
+  status      String    @default("available") // "available" | "in_progress" | "completed"
+  attempts    Int       @default(0)
+  bestScore   Int? // 0-100
+  completedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+}
+
+// ─── Achievements ────────────────────────────────────────────────────────────
+
+model Achievement {
+  id          String  @id // stable slug e.g. "first_steps"
+  title       String
+  description String
+  category    String  @default("general")
+  iconKey     String  @default("star") // maps to an emoji or icon name
+  criteria    String // JSON describing unlock condition
+  xpBonus     Int     @default(0)
+  isActive    Boolean @default(true)
+
+  userAchievements UserAchievement[]
+}
+
+model UserAchievement {
+  id            String      @id @default(uuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+  unlockedAt    DateTime    @default(now())
+
+  @@unique([userId, achievementId]) // each achievement unlocks once per user
+  @@index([userId])
+}
