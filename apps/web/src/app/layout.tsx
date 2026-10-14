@@ -1,18 +1,30 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
+export const viewport: Viewport = {
+  themeColor: "#6847FF",
+};
+
 export const metadata: Metadata = {
-  title: "Lernaut — AI-Powered Gamified Learning Platform",
+  title: "Lernaut — Personalized AI Learning, Made Engaging",
   description:
-    "Master any subject with Lernaut's interactive AI teacher, personalized roadmaps, gamified quizzes, and real-time progression.",
+    "Turn your study materials into personalized AI lessons, interactive quizzes, structured learning paths, and progress you can track with Lernaut.",
   keywords: [
     "Lernaut",
     "AI Teacher",
     "Gamified Learning",
     "Adaptive Roadmap",
-    "Educational Platform",
+    "Educational Technology",
+    "Personalized Lessons",
   ],
   authors: [{ name: "Aiyan Iqbal" }],
+  openGraph: {
+    title: "Lernaut — Personalized AI Learning, Made Engaging",
+    description:
+      "Turn your study materials into personalized AI lessons, interactive quizzes, structured learning paths, and progress you can track with Lernaut.",
+    type: "website",
+    siteName: "Lernaut",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

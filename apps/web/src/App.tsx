@@ -1,8 +1,10 @@
 "use client";
-import React, { useState } from 'react';
-import { HashRouter as BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { LoginPage } from './pages/auth/LoginPage';
-import { SignupPage } from './pages/auth/SignupPage';
+import React, { useState, useEffect } from 'react';
+import { HashRouter as BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { LoginPage } from './components/auth/LoginPage';
+import { SignupPage } from './components/auth/SignupPage';
+import { LandingPage } from './components/landing/LandingPage';
+import { AuthProvider, useAuth } from './hooks/useAuth';
 import {
   PageId,
   Lesson,
@@ -194,10 +196,27 @@ const buildLessonFromAiPlan = (
 };
 
 function MainApp() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { isAuthenticated, isLoading } = useAuth();
+
   // Navigation State & Navigation History Stack
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
   const [pageHistory, setPageHistory] = useState<PageId[]>(['dashboard']);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Sync currentPage with URL path (e.g. /dashboard, /learn, /materials, /roadmap, /leaderboard, /quiz, /profile)
+  useEffect(() => {
+    const path = location.pathname.replace(/^\//, '');
+    const validPages: PageId[] = [
+      'dashboard', 'learn', 'materials', 'roadmap',
+      'quiz', 'flashcards', 'mindmap', 'notes',
+      'progress', 'profile', 'leaderboard'
+    ];
+    if (validPages.includes(path as PageId)) {
+      setCurrentPage(path as PageId);
+    }
+  }, [location.pathname]);
 
   // Global Application State
   const [currentLesson, setCurrentLesson] = useState<Lesson>(sampleLesson);
@@ -213,10 +232,15 @@ function MainApp() {
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
 
   // Navigation Handler with Stack Push
-  const handleNavigate = (page: PageId) => {
+  const handleNavigate = (page: PageId | 'home') => {
+    if (page === 'home') {
+      navigate('/');
+      return;
+    }
     if (page === currentPage) return;
     setPageHistory((prev) => [...prev, page]);
     setCurrentPage(page);
+    navigate(`/${page}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -225,6 +249,7 @@ function MainApp() {
     if (pageHistory.length <= 1) {
       if (currentPage !== 'dashboard') {
         setCurrentPage('dashboard');
+        navigate('/dashboard');
       }
       return;
     }
@@ -233,6 +258,7 @@ function MainApp() {
     const previousPage = newHistory[newHistory.length - 1];
     setPageHistory(newHistory);
     setCurrentPage(previousPage);
+    navigate(`/${previousPage}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -443,7 +469,7 @@ function MainApp() {
       </div>
       
       <div className="relative z-10 flex flex-col min-h-screen">
-      {/* 1. Global Navbar with mandatory top-left back button strictly above Lernaut name/logo */}
+      {/* 1. Global Authenticated Navbar (Streak & countdown timer completely removed) */}
       <Navbar
         currentPage={currentPage}
         canGoBack={pageHistory.length > 1 || currentPage !== 'dashboard'}
@@ -451,9 +477,7 @@ function MainApp() {
         onNavigate={handleNavigate}
         language={student.preferredLanguage}
         onLanguageChange={handleLanguageChange}
-        streakDays={student.streakDays}
-        currentTopic={currentLesson.topicName}
-        onToggleMobileMenu={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+        isLandingPage={false}
       />
 
       {/* 2. Main Page Layout */}
@@ -569,15 +593,22 @@ function MainApp() {
   );
 }
 
+function LandingRoute() {
+  const navigate = useNavigate();
+  return <LandingPage onNavigateToApp={() => navigate('/dashboard')} />;
+}
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/login" replace />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-        <Route path="/*" element={<MainApp />} />
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<LandingRoute />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/*" element={<MainApp />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

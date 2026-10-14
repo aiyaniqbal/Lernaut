@@ -23,6 +23,15 @@
     --gold:#FFC93C;   --gold-edge:#D9A000;
     --flame:#FF8A3D;  --sky:#38C6F4;  --berry:#FF5C7A;
     --ink:#1E1B3A;    --cloud:#F6F4FF; --line:#E3DEFA;
+
+    /* Lernaut Theme Tokens */
+    --primary-purple: #6847FF;
+    --deep-indigo: #252046;
+    --light-lavender: #F3EFFF;
+    --primary-text: #24213A;
+    --secondary-text: #77738D;
+    --border-subtle: #E4DFFF;
+    --bg-page: #F8F6FF;
   }
   h1,h2,button{font-family:'Fredoka',sans-serif;font-weight:500}
   body{font-family:'Nunito',sans-serif;background:#F6F4FF;color:#1E1B3A}
