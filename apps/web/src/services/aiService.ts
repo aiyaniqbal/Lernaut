@@ -213,37 +213,132 @@ export class AiTeachingService {
     questionCount: number = 10
   ): Promise<{ questions: QuizQuestion[]; distributionNote: string }> {
     try {
-      const response = await fetch('http://localhost:8000/quiz/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic,
-          weak_areas: weakConcepts,
-          question_count: questionCount
-        })
-      });
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL ||
+        (typeof window !== 'undefined' && window.location.hostname === 'localhost'
+          ? 'http://localhost:8000'
+          : '');
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.questions && data.questions.length > 0) {
-          return {
-            questions: data.questions.map((q: any, i: number) => ({
-              ...q,
-              id: q.id || `gemini-q-${Date.now()}-${i}`,
-              options: q.options || ['A', 'B', 'C', 'D'],
-              correctAnswerIndex: typeof q.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0,
-              type: q.type || 'MCQ'
-            })),
-            distributionNote: data.distributionNote || 'Generated via AI Teacher.'
-          };
+      if (apiBase) {
+        const response = await fetch(`${apiBase}/quiz/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            topic,
+            weak_areas: weakConcepts,
+            question_count: questionCount,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.questions && data.questions.length > 0) {
+            return {
+              questions: data.questions.map((q: any, i: number) => ({
+                ...q,
+                id: q.id || `gemini-q-${Date.now()}-${i}`,
+                options: q.options || ['A', 'B', 'C', 'D'],
+                correctAnswerIndex:
+                  typeof q.correctAnswerIndex === 'number'
+                    ? q.correctAnswerIndex
+                    : 0,
+                type: q.type || 'MCQ',
+              })),
+              distributionNote:
+                data.distributionNote || 'Generated via AI Teacher.',
+            };
+          }
         }
       }
     } catch (e) {
-      console.error("Failed to generate quiz from backend API", e);
+      console.warn('Backend quiz generator not available, using fallback:', e);
     }
-    
+
     // Fallback gracefully
     return { questions: [], distributionNote: 'Fallback' };
+  }
+
+  /**
+   * Generates a fully structured interactive AI lesson client-side
+   * when the Python microservice is offline or deployed as a standalone web app.
+   */
+  static createDynamicLesson(
+    topic: string,
+    level: string = 'Intermediate',
+    language: string = 'English',
+    goal: string = 'Understand',
+    teachingStyle: string = 'Visual',
+    timeMinutes: string = '20'
+  ) {
+    const cleanTopic = topic.trim() || 'Core Fundamentals';
+    const lessonId = `lesson-gen-${Date.now()}`;
+    const minutes = parseInt(timeMinutes.replace(/\D/g, ''), 10) || 20;
+
+    const subtopics = [
+      {
+        suffix: 'Core Foundations & Definitions',
+        desc: `Understanding the essential principles, terminology, and foundational equations of ${cleanTopic}.`,
+        speech: `Welcome to our session on ${cleanTopic}! Today, we will explore its core foundations step-by-step so you gain complete confidence in the concepts.`,
+        q: `What is the foundational principle underlying ${cleanTopic}?`,
+        correct: `It establishes systematic rules and relationships governing how the core components interact.`,
+        wrong: `It operates completely independently without any mathematical or empirical basis.`,
+        analogy: `Think of it like building the foundation of a house — mastering this ensures everything built on top remains rock solid.`,
+      },
+      {
+        suffix: 'Mechanisms & Real-world Interactions',
+        desc: `Analyzing dynamic behavior, active mechanisms, and practical problem-solving in ${cleanTopic}.`,
+        speech: `Now that we understand the foundations of ${cleanTopic}, let us investigate the underlying mechanism and how changes in inputs directly impact performance.`,
+        q: `When applying ${cleanTopic} in practical scenarios, which factor is most crucial?`,
+        correct: `Verifying boundary conditions and component equilibrium across operational states.`,
+        wrong: `Ignoring intermediate transitions and assuming instantaneous equilibrium at all times.`,
+        analogy: `Imagine water flowing through connected pipes — balancing input pressure and flow rate is essential for stability.`,
+      },
+      {
+        suffix: 'Advanced Synthesis & Problem Solving',
+        desc: `Synthesizing concepts, avoiding common pitfalls, and applying diagnostic skills to complex scenarios.`,
+        speech: `Outstanding progress! In this final section, we synthesize our knowledge of ${cleanTopic} and tackle advanced diagnostic problems to solidify your mastery.`,
+        q: `What is the most effective approach for diagnosing anomalies in ${cleanTopic}?`,
+        correct: `Decomposing the problem into isolated modules and testing each against expected theoretical baselines.`,
+        wrong: `Randomly adjusting parameters until a temporary functional state appears.`,
+        analogy: `Like a spacecraft flight engineer running diagnostic telemetry checks before making precision course corrections.`,
+      },
+    ];
+
+    return {
+      id: lessonId,
+      courseId: `course-${Date.now()}`,
+      courseName: `${cleanTopic} Masterclass`,
+      topicId: `topic-${Date.now()}`,
+      topicName: cleanTopic,
+      learningLevel: level as any,
+      language: language as any,
+      teachingStyle: teachingStyle as any,
+      estimatedMinutes: minutes,
+      overallProgress: 0,
+      concepts: subtopics.map((sub, idx) => ({
+        id: `c-${idx + 1}`,
+        name: `${cleanTopic} — ${sub.suffix}`,
+        description: sub.desc,
+        teacherSpeechText: sub.speech,
+        visualPrompt: `Diagram illustrating ${cleanTopic} ${sub.suffix.toLowerCase()}`,
+        quickCheckQuestion: {
+          id: `qc-${idx + 1}`,
+          conceptId: `c-${idx + 1}`,
+          conceptName: sub.suffix,
+          question: sub.q,
+          options: [
+            { id: 'opt-a', text: sub.correct, isCorrect: true },
+            { id: 'opt-b', text: sub.wrong, isCorrect: false },
+            { id: 'opt-c', text: `Only qualitative estimates are necessary for ${cleanTopic}.`, isCorrect: false },
+            { id: 'opt-d', text: `It applies exclusively in hypothetical models and never in practice.`, isCorrect: false },
+          ],
+          correctOptionId: 'opt-a',
+          correctExplanation: `Correct! ${sub.correct}`,
+          misconceptionExplanation: `Incorrect. Careful verification against theoretical baselines is essential.`,
+          simplifiedAnalogy: sub.analogy,
+        },
+      })),
+    };
   }
 
   /**

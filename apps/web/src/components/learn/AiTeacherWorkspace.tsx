@@ -126,7 +126,7 @@ const getMeaningfulTitle = (
  * not translate English text and Windows/browser voice lists vary by machine.
  * The dedicated TTS server returns real MP3 audio from a Hindi neural voice.
  */
-const TTS_SERVER = '';
+const TTS_SERVER = process.env.NEXT_PUBLIC_TTS_URL || '';
 
 const speakTextDirectly = (
   text: string,
@@ -217,12 +217,34 @@ const speakTextDirectly = (
       await audio.play();
     } catch (error) {
       if (controller.signal.aborted) return;
-      console.error('Lernaut TTS error:', error);
-      window.alert(
-        language === 'Hindi'
-          ? 'Hindi Teacher Voice is unavailable. Start the Lernaut voice server on port 8001.'
-          : 'Teacher Voice is unavailable. Start the Lernaut voice server on port 8001.'
-      );
+      console.warn('Dedicated TTS server unavailable, falling back to browser speech synthesis:', error);
+
+      // Graceful fallback to native Web Speech API in browser
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.rate = rate;
+          if (language === 'Hindi') {
+            utterance.lang = 'hi-IN';
+          } else {
+            utterance.lang = 'en-US';
+          }
+          utterance.onend = () => {
+            cleanup();
+            finish();
+          };
+          utterance.onerror = () => {
+            cleanup();
+            finish();
+          };
+          window.speechSynthesis.speak(utterance);
+          return;
+        } catch (synthErr) {
+          console.warn('SpeechSynthesis error:', synthErr);
+        }
+      }
+
       cleanup();
       finish();
     }

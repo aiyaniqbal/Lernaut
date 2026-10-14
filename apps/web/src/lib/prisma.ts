@@ -1,7 +1,7 @@
 /**
  * Singleton Prisma client — avoids exhausting connections in Next.js dev mode.
  */
-import { PrismaClient } from '../../prisma/generated/client';
+import { PrismaClient } from '@prisma/client';
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
 
