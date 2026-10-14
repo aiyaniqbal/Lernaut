@@ -33,7 +33,9 @@ export async function getCompletedMissionsToday(): Promise<{
       select: { missionId: true },
     });
 
-    const completed = Array.from(new Set(logs.map((l) => l.missionId)));
+    const completed: string[] = Array.from(
+      new Set(logs.map((l: { missionId: string }) => l.missionId))
+    );
     return {
       completedMissions: completed,
       msUntilReset: msUntilMidnight,
