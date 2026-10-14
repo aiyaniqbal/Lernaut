@@ -83,7 +83,7 @@ async function awardXP(params: {
   });
   if (existing) return false; // already awarded
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: any) => {
     // 1. Create the XP transaction record
     await tx.xpTransaction.create({
       data: {
@@ -240,7 +240,7 @@ async function evaluateAchievements(
     where: { userId },
     select: { achievementId: true },
   });
-  const earnedIds = new Set(earned.map((e) => e.achievementId));
+  const earnedIds = new Set(earned.map((e: any) => e.achievementId));
 
   const newlyUnlocked: string[] = [];
 
@@ -334,7 +334,7 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
     select: { lessonId: true },
   });
   const distinctTopics = new Set(
-    lessons.map((l) => l.lessonId.split('_')[0])
+    lessons.map((l: any) => l.lessonId.split('_')[0])
   ).size;
 
   return {
@@ -590,13 +590,13 @@ export async function getFullProgress(userId: string): Promise<{
     totalActiveDays: activeDays,
     xpIntoCurrentLevel: levelInfo.xpIntoCurrentLevel,
     nextLevelXPRequired: levelInfo.nextLevelXPRequired,
-    recentXpHistory: recentXp.map((t) => ({
+    recentXpHistory: recentXp.map((t: any) => ({
       description: t.description ?? t.eventType,
       xpAmount: t.xpAmount,
       createdAt: t.createdAt.toISOString(),
       eventType: t.eventType,
     })),
-    earnedAchievements: userAchievements.map((ua) => ({
+    earnedAchievements: userAchievements.map((ua: any) => ({
       id: ua.achievementId,
       title: ua.achievement.title,
       description: ua.achievement.description,
@@ -604,7 +604,7 @@ export async function getFullProgress(userId: string): Promise<{
       xpBonus: ua.achievement.xpBonus,
       unlockedAt: ua.unlockedAt.toISOString(),
     })),
-    weeklyActivity: weeklyActivity.map((a) => ({
+    weeklyActivity: weeklyActivity.map((a: any) => ({
       date: a.localActivityDate,
       xpEarned: a.xpEarned,
     })),
@@ -703,15 +703,15 @@ export async function getWeeklyLeaderboard(): Promise<
     }
 
     // Fetch user details
-    const userIds = weeklyXpRows.map((r) => r.userId);
+    const userIds = weeklyXpRows.map((r: any) => r.userId);
     const users = await prisma.user.findMany({
       where: { id: { in: userIds } },
       include: { profile: true },
     });
-    const userMap = new Map(users.map((u) => [u.id, u]));
+    const userMap = new Map<string, any>(users.map((u: any) => [u.id, u]));
 
-    const list = weeklyXpRows.map((row, index) => {
-      const user = userMap.get(row.userId);
+    const list = weeklyXpRows.map((row: any, index: number) => {
+      const user: any = userMap.get(row.userId);
       const displayName =
         user?.profile?.username ||
         (user?.displayName && user.displayName !== 'Learner'
@@ -722,7 +722,7 @@ export async function getWeeklyLeaderboard(): Promise<
       return {
         userId: row.userId,
         displayName,
-        weeklyXP: row._sum.xpAmount ?? 0,
+        weeklyXP: row._sum?.xpAmount ?? 0,
         lifetimeXP: user?.lifetimeXP ?? 0,
         currentStreak: user?.currentStreak ?? 0,
         currentLevel: user?.currentLevel ?? 1,
@@ -759,7 +759,7 @@ export async function getLifetimeLeaderboard(): Promise<
       return FALLBACK_LEADERBOARD;
     }
 
-    return users.map((user, index) => ({
+    return users.map((user: any, index: number) => ({
       userId: user.id,
       displayName:
         user.profile?.username ||
