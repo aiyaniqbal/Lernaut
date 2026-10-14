@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Trophy, Flame, Zap, Crown, RefreshCw, Users } from 'lucide-react';
+import { Trophy, Flame, Zap, Crown, RefreshCw, Users, Star } from 'lucide-react';
 import { getWeeklyLeaderboard, getLifetimeLeaderboard } from '../../app/actions/progression';
 import { getLevelTitle } from '../../utils/xpUtils';
+import { getUserIdSync } from '../../hooks/useUserId';
+import { PixelGhostLoader } from '../common/PixelGhostLoader';
 
 interface LeaderboardEntry {
   userId: string;
@@ -11,6 +13,7 @@ interface LeaderboardEntry {
   currentStreak: number;
   currentLevel: number;
   rank: number;
+  isCurrentUser?: boolean;
 }
 
 const tierForLevel = (level: number) => {
@@ -32,15 +35,20 @@ export const LeaderboardView: React.FC = () => {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => getUserIdSync());
 
   const fetchData = async () => {
     setLoading(true);
     setError(null);
     try {
+      const uid = getUserIdSync();
+      if (uid && uid !== currentUserId) {
+        setCurrentUserId(uid);
+      }
       const data =
         period === 'weekly'
-          ? await getWeeklyLeaderboard()
-          : await getLifetimeLeaderboard();
+          ? await getWeeklyLeaderboard(uid || undefined)
+          : await getLifetimeLeaderboard(uid || undefined);
       setEntries(data as LeaderboardEntry[]);
     } catch (err) {
       setError('Could not load leaderboard. Please try again.');
@@ -64,6 +72,10 @@ export const LeaderboardView: React.FC = () => {
 
   const xpValue = (entry: LeaderboardEntry) =>
     period === 'weekly' ? (entry.weeklyXP ?? 0) : entry.lifetimeXP;
+
+  const currentUserEntry = entries.find(
+    (e) => e.isCurrentUser || (currentUserId && e.userId === currentUserId)
+  );
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto pb-10">
@@ -98,19 +110,56 @@ export const LeaderboardView: React.FC = () => {
           <button
             onClick={fetchData}
             className="p-2 rounded-xl border-[3px] border-ink bg-white shadow-[3px_3px_0px_0px_#1E1B3A] hover:-translate-y-[1px] transition-all"
-            title="Refresh"
+            title="Refresh Leaderboard"
           >
             <RefreshCw className="w-4 h-4 text-ink" />
           </button>
         </div>
       </div>
 
-      {/* Loading state */}
-      {loading && (
-        <div className="flex flex-col items-center justify-center py-20 gap-4">
-          <div className="w-12 h-12 border-[3px] border-ink border-t-violet rounded-full animate-spin" />
-          <p className="font-fredoka font-black text-ink uppercase tracking-wide">Loading Rankings...</p>
+      {/* Active User Live Ranking Banner */}
+      {currentUserEntry && !loading && (
+        <div className="bg-gradient-to-r from-violet to-[#5833FF] rounded-[24px] border-[3px] border-ink p-5 text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-[6px_6px_0px_0px_#1E1B3A]">
+          <div className="flex items-center gap-4 w-full sm:w-auto">
+            <div className="w-14 h-14 rounded-2xl bg-gold border-[3px] border-ink flex flex-col items-center justify-center font-fredoka font-black text-ink shadow-[3px_3px_0px_0px_#1E1B3A] shrink-0">
+              <span className="text-[10px] uppercase tracking-tighter leading-none text-ink/70">Rank</span>
+              <span className="text-xl leading-none mt-0.5">#{currentUserEntry.rank}</span>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-fredoka font-black text-base sm:text-lg uppercase tracking-wide">
+                  {currentUserEntry.displayName}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-white text-violet text-[10px] font-fredoka font-black uppercase tracking-wider">
+                  YOU
+                </span>
+              </div>
+              <p className="text-xs font-nunito font-bold text-white/90 mt-0.5">
+                {period === 'weekly'
+                  ? `${(currentUserEntry.weeklyXP ?? 0).toLocaleString()} XP earned this week • Level ${currentUserEntry.currentLevel}`
+                  : `${currentUserEntry.lifetimeXP.toLocaleString()} Lifetime XP • Level ${currentUserEntry.currentLevel}`}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/20 border-2 border-white/40 text-xs font-fredoka font-black uppercase tracking-wider text-white">
+              <Flame className="w-4 h-4 fill-gold text-gold" />
+              {currentUserEntry.currentStreak} Day Streak
+            </span>
+            <button
+              onClick={fetchData}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gold hover:bg-[#FFE57F] text-ink font-fredoka font-black text-xs uppercase tracking-wider border-[2px] border-ink shadow-[2px_2px_0px_0px_#1E1B3A] active:translate-y-0.5 transition-all"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Update
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* Loading state - Pixel Ghost Retro Loader */}
+      {loading && (
+        <PixelGhostLoader message="Summoning Global Rankings..." />
       )}
 
       {/* Error state */}
@@ -218,22 +267,38 @@ export const LeaderboardView: React.FC = () => {
           <div className="divide-y-[3px] divide-ink bg-[#F8F7FA]">
             {entries.map((entry) => {
               const tier = tierForLevel(entry.currentLevel);
+              const isCurrent = entry.isCurrentUser || (Boolean(currentUserId) && entry.userId === currentUserId);
               return (
                 <div
                   key={entry.userId}
-                  className="flex items-center justify-between p-4 sm:p-5 hover:bg-white transition-colors group cursor-pointer"
+                  className={`flex items-center justify-between p-4 sm:p-5 transition-all group cursor-pointer ${
+                    isCurrent
+                      ? 'bg-violet/10 border-l-[6px] border-l-violet shadow-[inset_0px_0px_12px_rgba(108,77,255,0.08)]'
+                      : 'hover:bg-white'
+                  }`}
                 >
                   <div className="flex items-center gap-4 sm:gap-6">
-                    <span className="text-lg sm:text-xl font-fredoka font-black text-ink/40 w-6 text-right group-hover:text-ink transition-colors">
+                    <span className={`text-lg sm:text-xl font-fredoka font-black w-6 text-right transition-colors ${
+                      isCurrent ? 'text-violet' : 'text-ink/40 group-hover:text-ink'
+                    }`}>
                       {entry.rank}
                     </span>
                     <div className="w-10 h-10 rounded-full bg-violet flex items-center justify-center text-white font-fredoka font-black text-lg border-[2px] border-ink shadow-[2px_2px_0px_0px_#1E1B3A] group-hover:-translate-y-1 group-hover:shadow-[4px_4px_0px_0px_#FFC93C] transition-all">
                       {entry.displayName.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <h4 className="font-nunito font-extrabold text-ink text-sm group-hover:text-violet transition-colors">
-                        {entry.displayName}
-                      </h4>
+                      <div className="flex items-center gap-2">
+                        <h4 className={`font-nunito font-extrabold text-sm transition-colors ${
+                          isCurrent ? 'text-violet font-black' : 'text-ink group-hover:text-violet'
+                        }`}>
+                          {entry.displayName}
+                        </h4>
+                        {isCurrent && (
+                          <span className="px-2 py-0.5 rounded-full bg-violet text-white text-[10px] font-fredoka font-black uppercase tracking-wider shadow-[1px_1px_0px_0px_#1E1B3A]">
+                            YOU
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-3 mt-1 text-[10px] sm:text-xs">
                         <span className="flex items-center gap-1 font-nunito font-bold text-ink/70">
                           <Flame className="w-3.5 h-3.5 fill-flame text-flame" />
@@ -247,8 +312,12 @@ export const LeaderboardView: React.FC = () => {
                   </div>
 
                   <div className="text-right">
-                    <div className="text-sm sm:text-lg font-fredoka font-black text-ink bg-white px-3 py-1 rounded-xl border-[2px] border-ink shadow-[2px_2px_0px_0px_#1E1B3A] group-hover:shadow-[3px_3px_0px_0px_#FF5C7A] transition-all">
-                      {xpValue(entry).toLocaleString()} <span className="text-[10px] sm:text-xs text-ink/60 uppercase">XP</span>
+                    <div className={`text-sm sm:text-lg font-fredoka font-black px-3 py-1 rounded-xl border-[2px] border-ink transition-all ${
+                      isCurrent
+                        ? 'bg-violet text-white shadow-[3px_3px_0px_0px_#1E1B3A]'
+                        : 'bg-white text-ink shadow-[2px_2px_0px_0px_#1E1B3A] group-hover:shadow-[3px_3px_0px_0px_#FF5C7A]'
+                    }`}>
+                      {xpValue(entry).toLocaleString()} <span className={`text-[10px] sm:text-xs uppercase ${isCurrent ? 'text-white/85' : 'text-ink/60'}`}>XP</span>
                     </div>
                   </div>
                 </div>

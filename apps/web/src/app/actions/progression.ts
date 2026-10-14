@@ -55,14 +55,29 @@ export async function ensureUser(
   userId: string,
   displayName?: string
 ): Promise<void> {
+  const name = displayName && displayName !== 'Learner' ? displayName : 'Aiyan';
   await prisma.user.upsert({
     where: { id: userId },
-    update: displayName ? { displayName } : {},
+    update: displayName ? { displayName: name } : {},
     create: {
       id: userId,
-      displayName: displayName ?? 'Learner',
+      displayName: name,
     },
   });
+
+  // Ensure legacy/companion Profile exists for component compatibility
+  await prisma.profile.upsert({
+    where: { userId },
+    update: displayName ? { username: name } : {},
+    create: {
+      userId,
+      username: name,
+      totalXP: 0,
+      level: 1,
+      streakDays: 1,
+    },
+  });
+
   // Seed achievements on first interaction
   await seedAchievements();
 }
@@ -367,14 +382,8 @@ export async function completeLesson(
     where: { userId_lessonId: { userId, lessonId } },
   });
 
-  if (existing?.status === 'completed') {
-    return {
-      success: true,
-      xpAwarded: 0,
-      newAchievements: [],
-      alreadyCompleted: true,
-    };
-  }
+  const isFirstTime = !existing || existing.status !== 'completed';
+  const xpAmount = isFirstTime ? XP_CONFIG.LESSON_COMPLETE_FIRST_TIME : 10;
 
   // Mark as completed
   await prisma.lessonProgress.upsert({
@@ -393,16 +402,21 @@ export async function completeLesson(
     },
   });
 
-  // Award XP (idempotent)
-  const xpKey = `lesson_complete_${userId}_${lessonId}`;
+  // Award XP (first time: lesson_complete_..., reviews: timestamped)
+  const xpKey = isFirstTime
+    ? `lesson_complete_${userId}_${lessonId}`
+    : `lesson_review_${userId}_${lessonId}_${Date.now()}`;
+
   const awarded = await awardXP({
     userId,
-    amount: XP_CONFIG.LESSON_COMPLETE_FIRST_TIME,
-    eventType: 'lesson_complete',
+    amount: xpAmount,
+    eventType: isFirstTime ? 'lesson_complete' : 'lesson_review',
     sourceType: 'lesson',
     sourceId: lessonId,
     idempotencyKey: xpKey,
-    description: `Completed "${lessonTitle}"`,
+    description: isFirstTime
+      ? `Completed "${lessonTitle}"`
+      : `Reviewed "${lessonTitle}" (+10 XP bonus)`,
   });
 
   // Record qualifying activity for streak
@@ -414,10 +428,38 @@ export async function completeLesson(
 
   return {
     success: true,
-    xpAwarded: awarded ? XP_CONFIG.LESSON_COMPLETE_FIRST_TIME : 0,
+    xpAwarded: awarded ? xpAmount : 0,
     newAchievements,
-    alreadyCompleted: false,
+    alreadyCompleted: !isFirstTime,
   };
+}
+
+// ─── Public API: Award Quick Check XP ─────────────────────────────────────────
+
+export async function awardQuickCheckXP(
+  userId: string,
+  conceptId: string,
+  conceptTitle: string
+): Promise<{ success: boolean; xpAwarded: number }> {
+  await ensureUser(userId);
+  const xpAmount = 10;
+  const xpKey = `quick_check_${userId}_${conceptId}_${Date.now()}`;
+
+  const awarded = await awardXP({
+    userId,
+    amount: xpAmount,
+    eventType: 'quick_check',
+    sourceType: 'concept',
+    sourceId: conceptId,
+    idempotencyKey: xpKey,
+    description: `Mastered Quick Check: "${conceptTitle}"`,
+  });
+
+  if (awarded) {
+    await recordQualifyingActivity(userId, 'lesson');
+  }
+
+  return { success: awarded, xpAwarded: awarded ? xpAmount : 0 };
 }
 
 // ─── Public API: Submit a quiz ────────────────────────────────────────────────
@@ -466,41 +508,40 @@ export async function submitQuiz(
 
   let totalXP = 0;
 
-  if (isFirstAttempt) {
-    // Base XP for first attempt
-    const baseKey = `quiz_base_${userId}_${quizId}`;
-    const baseAwarded = await awardXP({
+  // Base XP (first attempt base or retake participation)
+  const baseXP = isFirstAttempt ? XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE : 5;
+  const baseKey = `quiz_base_${userId}_${quizId}_${Date.now()}`;
+  const baseAwarded = await awardXP({
+    userId,
+    amount: baseXP,
+    eventType: 'quiz_submit',
+    sourceType: 'quiz',
+    sourceId: quizId,
+    idempotencyKey: baseKey,
+    description: `Attempted quiz on "${quizTopic}"`,
+  });
+  if (baseAwarded) totalXP += baseXP;
+
+  // Performance bonus (up to 15 XP, calculated from score)
+  const performanceBonus = Math.round(
+    (score / 100) * XP_CONFIG.QUIZ_PERFORMANCE_MAX_BONUS
+  );
+  if (performanceBonus > 0) {
+    const bonusKey = `quiz_perf_${userId}_${quizId}_${Date.now()}`;
+    const bonusAwarded = await awardXP({
       userId,
-      amount: XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE,
-      eventType: 'quiz_submit',
+      amount: performanceBonus,
+      eventType: 'quiz_performance_bonus',
       sourceType: 'quiz',
       sourceId: quizId,
-      idempotencyKey: baseKey,
-      description: `Attempted quiz on "${quizTopic}"`,
+      idempotencyKey: bonusKey,
+      description: `Scored ${score}% on "${quizTopic}" (+${performanceBonus} XP bonus)`,
     });
-    if (baseAwarded) totalXP += XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE;
-
-    // Performance bonus (up to 15 XP, calculated from score)
-    const performanceBonus = Math.round(
-      (score / 100) * XP_CONFIG.QUIZ_PERFORMANCE_MAX_BONUS
-    );
-    if (performanceBonus > 0) {
-      const bonusKey = `quiz_perf_${userId}_${quizId}`;
-      const bonusAwarded = await awardXP({
-        userId,
-        amount: performanceBonus,
-        eventType: 'quiz_performance_bonus',
-        sourceType: 'quiz',
-        sourceId: quizId,
-        idempotencyKey: bonusKey,
-        description: `Scored ${score}% on "${quizTopic}" (+${performanceBonus} XP bonus)`,
-      });
-      if (bonusAwarded) totalXP += performanceBonus;
-    }
-
-    // Record qualifying activity for streak
-    await recordQualifyingActivity(userId, 'quiz');
+    if (bonusAwarded) totalXP += performanceBonus;
   }
+
+  // Record qualifying activity for streak
+  await recordQualifyingActivity(userId, 'quiz');
 
   // Evaluate achievements (using latest quiz score for perfect/mastery checks)
   const context = await getProgressionContext(userId, score);
@@ -670,7 +711,7 @@ const FALLBACK_LEADERBOARD = [
   },
 ];
 
-export async function getWeeklyLeaderboard(): Promise<
+export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
   Array<{
     userId: string;
     displayName: string;
@@ -679,6 +720,7 @@ export async function getWeeklyLeaderboard(): Promise<
     currentStreak: number;
     currentLevel: number;
     rank: number;
+    isCurrentUser?: boolean;
   }>
 > {
   try {
@@ -698,46 +740,91 @@ export async function getWeeklyLeaderboard(): Promise<
       orderBy: { _sum: { xpAmount: 'desc' } },
     });
 
-    if (!weeklyXpRows || weeklyXpRows.length === 0) {
-      return FALLBACK_LEADERBOARD;
+    const userIdsSet = new Set<string>();
+    for (const r of weeklyXpRows) {
+      userIdsSet.add(r.userId);
+    }
+    if (currentUserId) {
+      await ensureUser(currentUserId);
+      userIdsSet.add(currentUserId);
+    }
+    for (const fb of FALLBACK_LEADERBOARD) {
+      userIdsSet.add(fb.userId);
     }
 
     // Fetch user details
-    const userIds = weeklyXpRows.map((r: any) => r.userId);
     const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
+      where: { id: { in: Array.from(userIdsSet) } },
       include: { profile: true },
     });
     const userMap = new Map<string, any>(users.map((u: any) => [u.id, u]));
 
-    const list = weeklyXpRows.map((row: any, index: number) => {
-      const user: any = userMap.get(row.userId);
+    const weeklyMap = new Map<string, number>();
+    for (const row of weeklyXpRows) {
+      weeklyMap.set(row.userId, row._sum?.xpAmount ?? 0);
+    }
+
+    const list: Array<{
+      userId: string;
+      displayName: string;
+      weeklyXP: number;
+      lifetimeXP: number;
+      currentStreak: number;
+      currentLevel: number;
+      rank: number;
+      isCurrentUser?: boolean;
+    }> = [];
+
+    for (const uid of userIdsSet) {
+      const user = userMap.get(uid);
+      const fallback = FALLBACK_LEADERBOARD.find((f) => f.userId === uid);
+
       const displayName =
         user?.profile?.username ||
         (user?.displayName && user.displayName !== 'Learner'
           ? user.displayName
           : null) ||
+        fallback?.displayName ||
         user?.displayName ||
         'Learner';
-      return {
-        userId: row.userId,
+
+      const weeklyXP = weeklyMap.get(uid) ?? fallback?.weeklyXP ?? 0;
+      const lifetimeXP = user?.lifetimeXP ?? fallback?.lifetimeXP ?? 0;
+      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 1;
+      const currentLevel = user?.currentLevel ?? fallback?.currentLevel ?? 1;
+
+      list.push({
+        userId: uid,
         displayName,
-        weeklyXP: row._sum?.xpAmount ?? 0,
-        lifetimeXP: user?.lifetimeXP ?? 0,
-        currentStreak: user?.currentStreak ?? 0,
-        currentLevel: user?.currentLevel ?? 1,
-        rank: index + 1,
-      };
+        weeklyXP,
+        lifetimeXP,
+        currentStreak,
+        currentLevel,
+        rank: 0,
+        isCurrentUser: currentUserId ? uid === currentUserId : false,
+      });
+    }
+
+    // Sort descending by weeklyXP, then by lifetimeXP
+    list.sort((a, b) => {
+      if (b.weeklyXP !== a.weeklyXP) return b.weeklyXP - a.weeklyXP;
+      return b.lifetimeXP - a.lifetimeXP;
     });
 
-    return list.length > 0 ? list : FALLBACK_LEADERBOARD;
+    return list.map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
   } catch (err) {
     console.warn('[Leaderboard] getWeeklyLeaderboard fallback to community rankings:', err);
-    return FALLBACK_LEADERBOARD;
+    return FALLBACK_LEADERBOARD.map((item) => ({
+      ...item,
+      isCurrentUser: currentUserId ? item.userId === currentUserId : false,
+    }));
   }
 }
 
-export async function getLifetimeLeaderboard(): Promise<
+export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
   Array<{
     userId: string;
     displayName: string;
@@ -745,34 +832,84 @@ export async function getLifetimeLeaderboard(): Promise<
     currentStreak: number;
     currentLevel: number;
     rank: number;
+    isCurrentUser?: boolean;
   }>
 > {
   try {
-    const users = await prisma.user.findMany({
+    const userIdsSet = new Set<string>();
+    if (currentUserId) {
+      await ensureUser(currentUserId);
+      userIdsSet.add(currentUserId);
+    }
+    for (const fb of FALLBACK_LEADERBOARD) {
+      userIdsSet.add(fb.userId);
+    }
+
+    const topUsers = await prisma.user.findMany({
       where: { lifetimeXP: { gt: 0 } },
       include: { profile: true },
       orderBy: { lifetimeXP: 'desc' },
       take: 50,
     });
-
-    if (!users || users.length === 0) {
-      return FALLBACK_LEADERBOARD;
+    for (const u of topUsers) {
+      userIdsSet.add(u.id);
     }
 
-    return users.map((user: any, index: number) => ({
-      userId: user.id,
-      displayName:
-        user.profile?.username ||
-        (user.displayName !== 'Learner' ? user.displayName : null) ||
-        user.displayName ||
-        'Learner',
-      lifetimeXP: user.lifetimeXP,
-      currentStreak: user.currentStreak,
-      currentLevel: user.currentLevel,
+    const allUsers = await prisma.user.findMany({
+      where: { id: { in: Array.from(userIdsSet) } },
+      include: { profile: true },
+    });
+    const userMap = new Map<string, any>(allUsers.map((u: any) => [u.id, u]));
+
+    const list: Array<{
+      userId: string;
+      displayName: string;
+      lifetimeXP: number;
+      currentStreak: number;
+      currentLevel: number;
+      rank: number;
+      isCurrentUser?: boolean;
+    }> = [];
+
+    for (const uid of userIdsSet) {
+      const user = userMap.get(uid);
+      const fallback = FALLBACK_LEADERBOARD.find((f) => f.userId === uid);
+
+      const displayName =
+        user?.profile?.username ||
+        (user?.displayName && user.displayName !== 'Learner'
+          ? user.displayName
+          : null) ||
+        fallback?.displayName ||
+        user?.displayName ||
+        'Learner';
+
+      const lifetimeXP = user?.lifetimeXP ?? fallback?.lifetimeXP ?? 0;
+      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 1;
+      const currentLevel = user?.currentLevel ?? fallback?.currentLevel ?? 1;
+
+      list.push({
+        userId: uid,
+        displayName,
+        lifetimeXP,
+        currentStreak,
+        currentLevel,
+        rank: 0,
+        isCurrentUser: currentUserId ? uid === currentUserId : false,
+      });
+    }
+
+    list.sort((a, b) => b.lifetimeXP - a.lifetimeXP);
+
+    return list.map((item, index) => ({
+      ...item,
       rank: index + 1,
     }));
   } catch (err) {
     console.warn('[Leaderboard] getLifetimeLeaderboard fallback to community rankings:', err);
-    return FALLBACK_LEADERBOARD;
+    return FALLBACK_LEADERBOARD.map((item) => ({
+      ...item,
+      isCurrentUser: currentUserId ? item.userId === currentUserId : false,
+    }));
   }
 }

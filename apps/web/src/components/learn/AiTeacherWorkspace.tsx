@@ -24,6 +24,9 @@ import {
   AiTeachingService,
   AdaptiveEvaluationResult,
 } from '../../services/aiService';
+import { completeLesson, awardQuickCheckXP } from '../../app/actions/progression';
+import { getUserIdSync } from '../../hooks/useUserId';
+import confetti from 'canvas-confetti';
 
 interface AiTeacherWorkspaceProps {
   lesson: Lesson;
@@ -638,6 +641,23 @@ export const AiTeacherWorkspace: React.FC<
       setIsPlaying(false);
       setLocalProgress(100);
       onProgressChange?.(100);
+
+      // Actively complete lesson in database and award XP
+      const uid = getUserIdSync();
+      if (uid) {
+        completeLesson(uid, lesson.id, lesson.topicName)
+          .then((res) => {
+            console.log('[Lesson Complete] Awarded XP:', res.xpAwarded, 'New achievements:', res.newAchievements);
+          })
+          .catch((err) => {
+            console.warn('[Lesson Complete] Error saving lesson completion:', err);
+          });
+      }
+
+      try {
+        confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });
+      } catch (e) {}
+
       return;
     }
 
@@ -840,6 +860,16 @@ export const AiTeacherWorkspace: React.FC<
       // A completed Quick Check moves the lesson forward slightly,
       // without forcing the student to leave the current concept.
       if (isCorrect) {
+        // Award XP for mastering this Quick Check
+        const uid = getUserIdSync();
+        if (uid) {
+          awardQuickCheckXP(uid, activeConcept.id, displayConceptTitle)
+            .then((res) => {
+              console.log('[QuickCheck] Awarded XP:', res.xpAwarded);
+            })
+            .catch(console.error);
+        }
+
         const conceptIndex = lesson.concepts.findIndex(
           (concept) => concept.id === activeConcept.id
         );
@@ -1456,23 +1486,14 @@ export const AiTeacherWorkspace: React.FC<
               </div>
             </div>
 
-            {/* NEXT CONCEPT */}
+            {/* NEXT CONCEPT / COMPLETE LESSON */}
 
             <button
               type="button"
               onClick={
                 moveToNextConcept
               }
-              disabled={
-                lesson.concepts.findIndex(
-                  (c) =>
-                    c.id ===
-                    activeConceptId
-                ) >=
-                lesson.concepts.length -
-                  1
-              }
-              className="w-full mt-4 py-3.5 rounded-xl bg-[#2ED47A] hover:bg-[#1FA85F] disabled:bg-cloud disabled:text-ink/60 disabled:border-line disabled:shadow-none disabled:cursor-not-allowed text-ink text-sm font-fredoka font-black uppercase tracking-wide border-[3px] border-ink active:translate-y-1 active:translate-x-1 shadow-[4px_4px_0px_0px_#1E1B3A] active:shadow-[0px_0px_0px_0px_#1E1B3A] transition-all"
+              className="w-full mt-4 py-3.5 rounded-xl bg-[#2ED47A] hover:bg-[#1FA85F] text-ink text-sm font-fredoka font-black uppercase tracking-wide border-[3px] border-ink active:translate-y-1 active:translate-x-1 shadow-[4px_4px_0px_0px_#1E1B3A] active:shadow-[0px_0px_0px_0px_#1E1B3A] transition-all"
             >
               {lesson.concepts.findIndex(
                 (c) =>
@@ -1481,7 +1502,7 @@ export const AiTeacherWorkspace: React.FC<
               ) >=
               lesson.concepts.length -
                 1
-                ? 'Lesson Complete'
+                ? '🎉 Complete Lesson & Claim XP'
                 : 'Continue to Next Concept →'}
             </button>
 

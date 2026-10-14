@@ -163,11 +163,25 @@ export async function addXp(amount: number, source: string) {
 }
 
 /**
- * Fetches the current user's profile (legacy — used by DailyGoal component).
+ * Fetches the current user's profile (used by DailyGoal component).
  */
-export async function getProfile() {
-  const user = await prisma.user.findFirst({
-    include: { profile: true },
-  });
-  return user?.profile || null;
+export async function getProfile(userId?: string) {
+  try {
+    let user = null;
+    if (userId) {
+      user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { profile: true },
+      });
+    }
+    if (!user) {
+      user = await prisma.user.findFirst({
+        include: { profile: true },
+      });
+    }
+    return user?.profile || null;
+  } catch (e) {
+    console.warn('Could not fetch profile:', e);
+    return null;
+  }
 }

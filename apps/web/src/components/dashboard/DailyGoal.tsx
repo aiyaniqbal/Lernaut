@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Zap } from 'lucide-react';
 import { getProfile } from '../../app/actions/xp';
 import { getLevelInfo } from '../../utils/xpUtils';
+import { getUserIdSync } from '../../hooks/useUserId';
 
 export const DailyGoal: React.FC = () => {
   const [currentXP, setCurrentXP] = useState(0);
@@ -11,7 +12,8 @@ export const DailyGoal: React.FC = () => {
   useEffect(() => {
     // Fetch initial XP on mount and set up polling for live updates
     const fetchXp = async () => {
-      const profile = await getProfile();
+      const uid = getUserIdSync();
+      const profile = await getProfile(uid || undefined);
       if (profile) {
         const { level, xpIntoCurrentLevel, nextLevelXPRequired } = getLevelInfo(profile.totalXP);
         setCurrentXP(xpIntoCurrentLevel);

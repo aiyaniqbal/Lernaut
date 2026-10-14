@@ -27,6 +27,8 @@ import {
 } from '../../types';
 import { AiTeachingService } from '../../services/aiService';
 import confetti from 'canvas-confetti';
+import { submitQuiz } from '../../app/actions/progression';
+import { getUserIdSync } from '../../hooks/useUserId';
 
 interface QuizWorkspaceProps {
   materials: StudyMaterial[];
@@ -180,7 +182,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
   };
 
   // Submit test and generate report
-  const handleSubmitTest = () => {
+  const handleSubmitTest = async () => {
     let correct = 0;
     activeQuestions.forEach((q, idx) => {
       if (userAnswers[idx] === q.correctAnswerIndex) {
@@ -218,6 +220,17 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
     setCurrentReport(newResult);
     onSaveQuizResult(newResult);
     setMode('report');
+
+    // Actively award XP and record qualifying activity in DB
+    const userId = getUserIdSync();
+    if (userId) {
+      try {
+        const progressionRes = await submitQuiz(userId, newResult.id, newResult.topic, score);
+        console.log('[Quiz Progression] Awarded XP:', progressionRes.xpAwarded, 'Achievements:', progressionRes.newAchievements);
+      } catch (err) {
+        console.warn('[Quiz Progression] Failed to persist quiz progression to DB:', err);
+      }
+    }
   };
 
   // Format seconds to mm:ss

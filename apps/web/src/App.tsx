@@ -5,6 +5,7 @@ import { LoginPage } from './components/auth/LoginPage';
 import { SignupPage } from './components/auth/SignupPage';
 import { LandingPage } from './components/landing/LandingPage';
 import { AuthProvider, useAuth } from './hooks/useAuth';
+import { useUserId } from './hooks/useUserId';
 import {
   PageId,
   Lesson,
@@ -227,6 +228,9 @@ function MainApp() {
   const [quizPool, setQuizPool] = useState<QuizQuestion[]>(sampleQuizQuestions);
   const [student, setStudent] = useState<StudentProfile>(sampleStudentProfile);
   const [lastQuizResult, setLastQuizResult] = useState<QuizResult>(sampleQuizResult);
+
+  // Initialize and ensure active user in DB
+  useUserId(student.name);
 
   // Summary Modal state
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);

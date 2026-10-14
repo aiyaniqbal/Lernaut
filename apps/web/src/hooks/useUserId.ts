@@ -53,7 +53,16 @@ export function useUserId(displayName?: string): string | null {
 /** Synchronous read of userId — safe only after mount */
 export function getUserIdSync(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem(USER_ID_KEY) || localStorage.getItem(LEGACY_USER_ID_KEY);
+  let id = localStorage.getItem(USER_ID_KEY) || localStorage.getItem(LEGACY_USER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    try {
+      localStorage.setItem(USER_ID_KEY, id);
+    } catch (e) {
+      console.warn('Could not store user ID in localStorage:', e);
+    }
+  }
+  return id;
 }
 
 /** Set display name and persist */
