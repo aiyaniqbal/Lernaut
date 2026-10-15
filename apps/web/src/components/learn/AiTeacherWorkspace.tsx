@@ -257,7 +257,7 @@ const speakTextDirectly = (
 };
 
 
-export const AiTeacherWorkspace: React.FC<
+const AiTeacherWorkspaceComponent: React.FC<
   AiTeacherWorkspaceProps
 > = ({
   lesson,
@@ -648,6 +648,9 @@ export const AiTeacherWorkspace: React.FC<
         completeLesson(uid, lesson.id, lesson.topicName)
           .then((res) => {
             console.log('[Lesson Complete] Awarded XP:', res.xpAwarded, 'New achievements:', res.newAchievements);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+            }
           })
           .catch((err) => {
             console.warn('[Lesson Complete] Error saving lesson completion:', err);
@@ -866,6 +869,9 @@ export const AiTeacherWorkspace: React.FC<
           awardQuickCheckXP(uid, activeConcept.id, displayConceptTitle)
             .then((res) => {
               console.log('[QuickCheck] Awarded XP:', res.xpAwarded);
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+              }
             })
             .catch(console.error);
         }
@@ -1851,3 +1857,5 @@ export const AiTeacherWorkspace: React.FC<
     </div>
   );
 };
+
+export const AiTeacherWorkspace = React.memo(AiTeacherWorkspaceComponent);

@@ -33,7 +33,7 @@ type SummaryFormat =
   | 'Formula Sheet'
   | 'Beginner Explanation';
 
-export const SummaryWorkspace: React.FC<SummaryWorkspaceProps> = ({
+const SummaryWorkspaceComponent: React.FC<SummaryWorkspaceProps> = ({
   materials,
   isOpen,
   onClose,
@@ -207,3 +207,5 @@ export const SummaryWorkspace: React.FC<SummaryWorkspaceProps> = ({
     </div>
   );
 };
+
+export const SummaryWorkspace = React.memo(SummaryWorkspaceComponent);

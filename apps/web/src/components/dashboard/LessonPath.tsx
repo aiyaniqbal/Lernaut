@@ -1,7 +1,7 @@
 import React from 'react';
 import { Check, Star } from 'lucide-react';
 
-export const LessonPath: React.FC = () => {
+const LessonPathComponent: React.FC = () => {
   const nodes = [
     { id: 1, status: 'completed', icon: <Check className="w-6 h-6 text-ink" /> },
     { id: 2, status: 'completed', icon: <Check className="w-6 h-6 text-ink" /> },
@@ -42,3 +42,5 @@ export const LessonPath: React.FC = () => {
     </div>
   );
 };
+
+export const LessonPath = React.memo(LessonPathComponent);

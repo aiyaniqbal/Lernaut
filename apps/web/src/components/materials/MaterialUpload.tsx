@@ -77,7 +77,7 @@ interface MaterialUploadProps {
   educationLevelsLoading?: boolean;
 }
 
-export const MaterialUpload: React.FC<
+const MaterialUploadComponent: React.FC<
   MaterialUploadProps
 > = ({
   materials,
@@ -978,3 +978,5 @@ export const MaterialUpload: React.FC<
     </div>
   );
 };
+
+export const MaterialUpload = React.memo(MaterialUploadComponent);

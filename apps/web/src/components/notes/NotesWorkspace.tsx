@@ -22,7 +22,7 @@ interface NotesWorkspaceProps {
   onTogglePin: (id: string) => void;
 }
 
-export const NotesWorkspace: React.FC<NotesWorkspaceProps> = ({
+const NotesWorkspaceComponent: React.FC<NotesWorkspaceProps> = ({
   notes,
   onSaveNote,
   onDeleteNote,
@@ -394,3 +394,5 @@ export const NotesWorkspace: React.FC<NotesWorkspaceProps> = ({
     </div>
   );
 };
+
+export const NotesWorkspace = React.memo(NotesWorkspaceComponent);

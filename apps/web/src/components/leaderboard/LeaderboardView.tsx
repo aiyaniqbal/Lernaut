@@ -30,7 +30,7 @@ const tierColors: Record<string, string> = {
   Bronze: 'bg-[#F59E0B] text-white',
 };
 
-export const LeaderboardView: React.FC = () => {
+const LeaderboardViewComponent: React.FC = () => {
   const [period, setPeriod] = useState<'weekly' | 'lifetime'>('weekly');
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -330,4 +330,5 @@ export const LeaderboardView: React.FC = () => {
   );
 };
 
+export const LeaderboardView = React.memo(LeaderboardViewComponent);
 export default LeaderboardView;

@@ -22,7 +22,7 @@ interface FlashcardWorkspaceProps {
   onAddFlashcards: (cards: Flashcard[]) => void;
 }
 
-export const FlashcardWorkspace: React.FC<FlashcardWorkspaceProps> = ({
+const FlashcardWorkspaceComponent: React.FC<FlashcardWorkspaceProps> = ({
   materials,
   flashcards,
   onUpdateFlashcard,
@@ -280,3 +280,5 @@ export const FlashcardWorkspace: React.FC<FlashcardWorkspaceProps> = ({
     </div>
   );
 };
+
+export const FlashcardWorkspace = React.memo(FlashcardWorkspaceComponent);

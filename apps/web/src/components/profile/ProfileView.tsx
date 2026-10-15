@@ -19,7 +19,7 @@ interface ProfileViewProps {
   onUpdateProfile: (updated: StudentProfile) => void;
 }
 
-export const ProfileView: React.FC<ProfileViewProps> = ({
+const ProfileViewComponent: React.FC<ProfileViewProps> = ({
   student,
   onUpdateProfile,
 }) => {
@@ -251,3 +251,5 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     </div>
   );
 };
+
+export const ProfileView = React.memo(ProfileViewComponent);

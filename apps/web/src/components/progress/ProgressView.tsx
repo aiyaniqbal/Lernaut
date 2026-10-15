@@ -20,7 +20,7 @@ interface ProgressViewProps {
   onStartWeakPractice: (concept: string) => void;
 }
 
-export const ProgressView: React.FC<ProgressViewProps> = ({
+const ProgressViewComponent: React.FC<ProgressViewProps> = ({
   student,
   onNavigate,
   onStartWeakPractice,
@@ -250,3 +250,5 @@ export const ProgressView: React.FC<ProgressViewProps> = ({
     </div>
   );
 };
+
+export const ProgressView = React.memo(ProgressViewComponent);

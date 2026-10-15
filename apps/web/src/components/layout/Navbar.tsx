@@ -25,7 +25,7 @@ interface NavbarProps {
   isLandingPage?: boolean;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+const NavbarComponent: React.FC<NavbarProps> = ({
   currentPage = 'dashboard',
   onNavigate,
   onBack,
@@ -439,4 +439,6 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
+
+export const Navbar = React.memo(NavbarComponent);
 export default Navbar;

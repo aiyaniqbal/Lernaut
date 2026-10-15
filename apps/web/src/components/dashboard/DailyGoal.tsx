@@ -4,13 +4,13 @@ import { getProfile } from '../../app/actions/xp';
 import { getLevelInfo } from '../../utils/xpUtils';
 import { getUserIdSync } from '../../hooks/useUserId';
 
-export const DailyGoal: React.FC = () => {
+const DailyGoalComponent: React.FC = () => {
   const [currentXP, setCurrentXP] = useState(0);
   const [goalXP, setGoalXP] = useState(100);
   const [currentLevel, setCurrentLevel] = useState(1);
 
   useEffect(() => {
-    // Fetch initial XP on mount and set up polling for live updates
+    // Fetch initial XP on mount and set up reactive updates
     const fetchXp = async () => {
       const uid = getUserIdSync();
       const profile = await getProfile(uid || undefined);
@@ -22,10 +22,20 @@ export const DailyGoal: React.FC = () => {
       }
     };
     fetchXp();
-    
-    // Poll every 2 seconds for live updates from task manager
-    const interval = setInterval(fetchXp, 2000);
-    return () => clearInterval(interval);
+
+    const handleUpdate = () => {
+      fetchXp();
+    };
+    window.addEventListener('lernaut:xp-updated', handleUpdate);
+    window.addEventListener('focus', handleUpdate);
+
+    // Refresh every 30 seconds as background fallback
+    const interval = setInterval(fetchXp, 30000);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('lernaut:xp-updated', handleUpdate);
+      window.removeEventListener('focus', handleUpdate);
+    };
   }, []);
 
   const percentage = Math.min((currentXP / goalXP) * 100, 100);
@@ -83,3 +93,5 @@ export const DailyGoal: React.FC = () => {
     </div>
   );
 };
+
+export const DailyGoal = React.memo(DailyGoalComponent);

@@ -28,57 +28,82 @@ const XP_CONFIG = {
   DAILY_GOAL: 20,
 } as const;
 
-// ─── Seed achievements into DB if not present ─────────────────────────────────
+// ─── Seed achievements into DB if not present (cached per process) ───────────
+
+let achievementsSeeded = false;
 
 export async function seedAchievements(): Promise<void> {
-  for (const def of ACHIEVEMENT_DEFINITIONS) {
-    await prisma.achievement.upsert({
-      where: { id: def.id },
-      update: {},
-      create: {
-        id: def.id,
-        title: def.title,
-        description: def.description,
-        category: def.category,
-        iconKey: def.iconKey,
-        criteria: JSON.stringify(def.criteria),
-        xpBonus: def.xpBonus,
-        isActive: true,
-      },
-    });
+  if (achievementsSeeded) return;
+
+  try {
+    const existingCount = await prisma.achievement.count();
+    if (existingCount >= ACHIEVEMENT_DEFINITIONS.length) {
+      achievementsSeeded = true;
+      return;
+    }
+
+    for (const def of ACHIEVEMENT_DEFINITIONS) {
+      await prisma.achievement.upsert({
+        where: { id: def.id },
+        update: {},
+        create: {
+          id: def.id,
+          title: def.title,
+          description: def.description,
+          category: def.category,
+          iconKey: def.iconKey,
+          criteria: JSON.stringify(def.criteria),
+          xpBonus: def.xpBonus,
+          isActive: true,
+        },
+      });
+    }
+    achievementsSeeded = true;
+  } catch (err) {
+    console.warn('[Progression] Achievement seed check failed:', err);
   }
 }
 
-// ─── Ensure user exists ────────────────────────────────────────────────────────
+// ─── Ensure user exists (cached per process) ──────────────────────────────────
+
+const verifiedUsers = new Set<string>();
 
 export async function ensureUser(
   userId: string,
   displayName?: string
 ): Promise<void> {
+  // If already verified in this server instance and no custom displayName is passed, skip DB upserts
+  if (verifiedUsers.has(userId) && (!displayName || displayName === 'Learner')) {
+    return;
+  }
+
   const name = displayName && displayName !== 'Learner' ? displayName : 'Aiyan';
-  await prisma.user.upsert({
-    where: { id: userId },
-    update: displayName ? { displayName: name } : {},
-    create: {
-      id: userId,
-      displayName: name,
-    },
-  });
 
-  // Ensure legacy/companion Profile exists for component compatibility
-  await prisma.profile.upsert({
-    where: { userId },
-    update: displayName ? { username: name } : {},
-    create: {
-      userId,
-      username: name,
-      totalXP: 0,
-      level: 1,
-      streakDays: 1,
-    },
-  });
+  await Promise.all([
+    prisma.user.upsert({
+      where: { id: userId },
+      update: displayName ? { displayName: name } : {},
+      create: {
+        id: userId,
+        displayName: name,
+      },
+    }),
+    prisma.profile.upsert({
+      where: { userId },
+      update: displayName ? { username: name } : {},
+      create: {
+        userId,
+        username: name,
+        totalXP: 0,
+        level: 1,
+        streakDays: 1,
+      },
+    }),
+  ]);
 
-  // Seed achievements on first interaction
+  verifiedUsers.add(userId);
+
+  // Seed achievements once per process lifetime
   await seedAchievements();
 }
 
@@ -151,7 +176,7 @@ async function recordQualifyingActivity(
   const today = getLocalDateString(new Date(), user.timezone);
 
   // Upsert daily activity record
-  const activity = await prisma.dailyActivity.upsert({
+  await prisma.dailyActivity.upsert({
     where: { userId_localActivityDate: { userId, localActivityDate: today } },
     update: {
       qualifyingActivityCount: { increment: 1 },
@@ -168,29 +193,39 @@ async function recordQualifyingActivity(
     },
   });
 
-  // Recalculate streak
-  await recalculateStreak(userId, today);
+  // Recalculate streak without re-fetching user
+  await recalculateStreak(user, today);
 }
 
-async function recalculateStreak(userId: string, today: string): Promise<void> {
-  const user = await prisma.user.findUniqueOrThrow({
-    where: { id: userId },
-  });
-
+async function recalculateStreak(
+  user: {
+    id: string;
+    latestActivityDate: string | null;
+    currentStreak: number;
+    longestStreak: number;
+  },
+  today: string
+): Promise<void> {
+  const userId = user.id;
   const previousDate = user.latestActivityDate;
 
   if (!previousDate || previousDate === today) {
     // Either first activity or same day — just update date, don't change streak
-    // But if it's truly the first activity ever, set streak to 1
     if (!previousDate) {
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          latestActivityDate: today,
-          currentStreak: 1,
-          longestStreak: Math.max(1, user.longestStreak),
-        },
-      });
+      await Promise.all([
+        prisma.user.update({
+          where: { id: userId },
+          data: {
+            latestActivityDate: today,
+            currentStreak: 1,
+            longestStreak: Math.max(1, user.longestStreak),
+          },
+        }),
+        prisma.profile.updateMany({
+          where: { userId },
+          data: { streakDays: 1 },
+        }),
+      ]);
     } else {
       // Same day — already counted
       await prisma.user.update({
@@ -219,21 +254,20 @@ async function recalculateStreak(userId: string, today: string): Promise<void> {
 
   const newLongest = Math.max(newStreak, user.longestStreak);
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      latestActivityDate: today,
-      currentStreak: newStreak,
-      longestStreak: newLongest,
-      // Keep legacy Profile in sync
-    },
-  });
-
-  // Sync to legacy Profile
-  await prisma.profile.updateMany({
-    where: { userId },
-    data: { streakDays: newStreak },
-  });
+  await Promise.all([
+    prisma.user.update({
+      where: { id: userId },
+      data: {
+        latestActivityDate: today,
+        currentStreak: newStreak,
+        longestStreak: newLongest,
+      },
+    }),
+    prisma.profile.updateMany({
+      where: { userId },
+      data: { streakDays: newStreak },
+    }),
+  ]);
 }
 
 // ─── Achievement Evaluation ────────────────────────────────────────────────────
@@ -328,13 +362,13 @@ async function evaluateAchievements(
 // ─── Get progression context for achievement evaluation ───────────────────────
 
 async function getProgressionContext(userId: string, latestQuizScore?: number) {
-  const user = await prisma.user.findUniqueOrThrow({
-    where: { id: userId },
-  });
-
-  const [lessonsCompleted, quizzesCompleted, activeDays] = await Promise.all([
-    prisma.lessonProgress.count({
+  const [user, lessons, quizzesCompleted, activeDays] = await Promise.all([
+    prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+    }),
+    prisma.lessonProgress.findMany({
       where: { userId, status: 'completed' },
+      select: { lessonId: true },
     }),
     prisma.dailyActivity.aggregate({
       where: { userId },
@@ -343,11 +377,7 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
     prisma.dailyActivity.count({ where: { userId } }),
   ]);
 
-  // Count distinct topics from lesson IDs (prefix before "_")
-  const lessons = await prisma.lessonProgress.findMany({
-    where: { userId, status: 'completed' },
-    select: { lessonId: true },
-  });
+  // Count distinct topics from completed lesson IDs (prefix before "_")
   const distinctTopics = new Set(
     lessons.map((l: any) => l.lessonId.split('_')[0])
   ).size;
@@ -356,7 +386,7 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
     lifetimeXP: user.lifetimeXP,
     currentStreak: user.currentStreak,
     latestQuizScore,
-    totalLessonsCompleted: lessonsCompleted,
+    totalLessonsCompleted: lessons.length,
     totalQuizzesCompleted: quizzesCompleted._sum.quizzesCompleted ?? 0,
     distinctTopics,
     totalActiveDays: activeDays,
@@ -740,29 +770,34 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
       orderBy: { _sum: { xpAmount: 'desc' } },
     });
 
-    const userIdsSet = new Set<string>();
+    const realUserIds = new Set<string>();
     for (const r of weeklyXpRows) {
-      userIdsSet.add(r.userId);
+      realUserIds.add(r.userId);
     }
     if (currentUserId) {
       await ensureUser(currentUserId);
-      userIdsSet.add(currentUserId);
-    }
-    for (const fb of FALLBACK_LEADERBOARD) {
-      userIdsSet.add(fb.userId);
+      realUserIds.add(currentUserId);
     }
 
-    // Fetch user details
-    const users = await prisma.user.findMany({
-      where: { id: { in: Array.from(userIdsSet) } },
-      include: { profile: true },
-    });
+    // Fetch user details for real users only (avoids querying non-existent fallback IDs)
+    const users =
+      realUserIds.size > 0
+        ? await prisma.user.findMany({
+            where: { id: { in: Array.from(realUserIds) } },
+            include: { profile: true },
+          })
+        : [];
     const userMap = new Map<string, any>(users.map((u: any) => [u.id, u]));
 
     const weeklyMap = new Map<string, number>();
     for (const row of weeklyXpRows) {
       weeklyMap.set(row.userId, row._sum?.xpAmount ?? 0);
     }
+
+    const allUserIds = new Set<string>([
+      ...realUserIds,
+      ...FALLBACK_LEADERBOARD.map((f) => f.userId),
+    ]);
 
     const list: Array<{
       userId: string;
@@ -775,7 +810,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
       isCurrentUser?: boolean;
     }> = [];
 
-    for (const uid of userIdsSet) {
+    for (const uid of allUserIds) {
       const user = userMap.get(uid);
       const fallback = FALLBACK_LEADERBOARD.find((f) => f.userId === uid);
 
@@ -836,30 +871,35 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
   }>
 > {
   try {
-    const userIdsSet = new Set<string>();
     if (currentUserId) {
       await ensureUser(currentUserId);
-      userIdsSet.add(currentUserId);
-    }
-    for (const fb of FALLBACK_LEADERBOARD) {
-      userIdsSet.add(fb.userId);
     }
 
+    // Fetch top 50 users by lifetime XP in a single query
     const topUsers = await prisma.user.findMany({
       where: { lifetimeXP: { gt: 0 } },
       include: { profile: true },
       orderBy: { lifetimeXP: 'desc' },
       take: 50,
     });
-    for (const u of topUsers) {
-      userIdsSet.add(u.id);
+
+    const userMap = new Map<string, any>(topUsers.map((u: any) => [u.id, u]));
+
+    // If currentUserId is not in top 50, fetch that single user instead of refetching all
+    if (currentUserId && !userMap.has(currentUserId)) {
+      const currentUser = await prisma.user.findUnique({
+        where: { id: currentUserId },
+        include: { profile: true },
+      });
+      if (currentUser) {
+        userMap.set(currentUserId, currentUser);
+      }
     }
 
-    const allUsers = await prisma.user.findMany({
-      where: { id: { in: Array.from(userIdsSet) } },
-      include: { profile: true },
-    });
-    const userMap = new Map<string, any>(allUsers.map((u: any) => [u.id, u]));
+    const allUserIds = new Set<string>([
+      ...userMap.keys(),
+      ...FALLBACK_LEADERBOARD.map((f) => f.userId),
+    ]);
 
     const list: Array<{
       userId: string;
@@ -871,7 +911,7 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
       isCurrentUser?: boolean;
     }> = [];
 
-    for (const uid of userIdsSet) {
+    for (const uid of allUserIds) {
       const user = userMap.get(uid);
       const fallback = FALLBACK_LEADERBOARD.find((f) => f.userId === uid);
 

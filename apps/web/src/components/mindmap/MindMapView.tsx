@@ -22,7 +22,7 @@ interface MindMapViewProps {
   onGenerateQuestions: (conceptTitle: string) => void;
 }
 
-export const MindMapView: React.FC<MindMapViewProps> = ({
+const MindMapViewComponent: React.FC<MindMapViewProps> = ({
   onNavigate,
   onExplainConcept,
   onGenerateQuestions,
@@ -254,3 +254,5 @@ export const MindMapView: React.FC<MindMapViewProps> = ({
     </div>
   );
 };
+
+export const MindMapView = React.memo(MindMapViewComponent);

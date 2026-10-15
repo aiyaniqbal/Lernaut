@@ -40,7 +40,7 @@ interface QuizWorkspaceProps {
   onStartWeakPractice: (concept: string) => void;
 }
 
-export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
+const QuizWorkspaceComponent: React.FC<QuizWorkspaceProps> = ({
   materials,
   quizPool,
   student,
@@ -227,6 +227,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       try {
         const progressionRes = await submitQuiz(userId, newResult.id, newResult.topic, score);
         console.log('[Quiz Progression] Awarded XP:', progressionRes.xpAwarded, 'Achievements:', progressionRes.newAchievements);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+        }
       } catch (err) {
         console.warn('[Quiz Progression] Failed to persist quiz progression to DB:', err);
       }
@@ -780,3 +783,5 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
     </div>
   );
 };
+
+export const QuizWorkspace = React.memo(QuizWorkspaceComponent);

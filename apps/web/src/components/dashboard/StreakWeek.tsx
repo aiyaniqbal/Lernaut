@@ -26,14 +26,25 @@ async function fetchWeekActivity(): Promise<Set<string>> {
   }
 }
 
-export const StreakWeek: React.FC = () => {
+const StreakWeekComponent: React.FC = () => {
   const [activeDates, setActiveDates] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchWeekActivity().then(setActiveDates);
-    // Refresh every 30 s so completing a lesson updates the widget
-    const timer = setInterval(() => fetchWeekActivity().then(setActiveDates), 30000);
-    return () => clearInterval(timer);
+
+    const handleUpdate = () => {
+      fetchWeekActivity().then(setActiveDates);
+    };
+    window.addEventListener('lernaut:xp-updated', handleUpdate);
+    window.addEventListener('focus', handleUpdate);
+
+    // Refresh every 30 s as fallback
+    const timer = setInterval(handleUpdate, 30000);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('lernaut:xp-updated', handleUpdate);
+      window.removeEventListener('focus', handleUpdate);
+    };
   }, []);
 
   // Build current week Mon-Sun in local time
@@ -99,3 +110,5 @@ export const StreakWeek: React.FC = () => {
     </div>
   );
 };
+
+export const StreakWeek = React.memo(StreakWeekComponent);

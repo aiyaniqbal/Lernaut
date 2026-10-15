@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { HashRouter as BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { LoginPage } from './components/auth/LoginPage';
 import { SignupPage } from './components/auth/SignupPage';
@@ -236,20 +236,23 @@ function MainApp() {
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
 
   // Navigation Handler with Stack Push
-  const handleNavigate = (page: PageId | 'home') => {
-    if (page === 'home') {
-      navigate('/');
-      return;
-    }
-    if (page === currentPage) return;
-    setPageHistory((prev) => [...prev, page]);
-    setCurrentPage(page);
-    navigate(`/${page}`);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  const handleNavigate = useCallback(
+    (page: PageId | 'home') => {
+      if (page === 'home') {
+        navigate('/');
+        return;
+      }
+      if (page === currentPage) return;
+      setPageHistory((prev) => [...prev, page]);
+      setCurrentPage(page);
+      navigate(`/${page}`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [currentPage, navigate]
+  );
 
   // Back Navigation Handler (top-left button strictly above logo)
-  const handleBack = () => {
+  const handleBack = useCallback(() => {
     if (pageHistory.length <= 1) {
       if (currentPage !== 'dashboard') {
         setCurrentPage('dashboard');
@@ -264,116 +267,106 @@ function MainApp() {
     setCurrentPage(previousPage);
     navigate(`/${previousPage}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [pageHistory, currentPage, navigate]);
 
   // Language Change Handler
-  const handleLanguageChange = (lang: LanguageCode) => {
+  const handleLanguageChange = useCallback((lang: LanguageCode) => {
     setStudent((prev) => ({ ...prev, preferredLanguage: lang }));
     setCurrentLesson((prev) => ({ ...prev, language: lang }));
-  };
+  }, []);
 
   // Handlers for Materials & Lessons
-  const handleStartLessonWithMaterial = (
-    material: StudyMaterial
-  ) => {
-    try {
-      const rawLesson =
-        localStorage.getItem(
-          `lesson-${material.id}`
-        );
-      const savedLesson = rawLesson
-        ? JSON.parse(rawLesson)
-        : null;
+  const handleStartLessonWithMaterial = useCallback(
+    (material: StudyMaterial) => {
+      try {
+        const rawLesson = localStorage.getItem(`lesson-${material.id}`);
+        const savedLesson = rawLesson ? JSON.parse(rawLesson) : null;
 
-      if (
-        savedLesson &&
-        Array.isArray(
-          savedLesson.segments
-        ) &&
-        savedLesson.segments.length > 0
-      ) {
-        const savedLanguage =
-          (
+        if (
+          savedLesson &&
+          Array.isArray(savedLesson.segments) &&
+          savedLesson.segments.length > 0
+        ) {
+          const savedLanguage = (
             savedLesson._uiLanguage ||
             savedLesson.language ||
             student.preferredLanguage ||
             'English'
           ) as LanguageCode;
 
-        const aiLesson =
-          buildLessonFromAiPlan(
+          const aiLesson = buildLessonFromAiPlan(
             savedLesson,
             material.title,
             savedLanguage
           );
 
-        setStudent((prev) => ({
-          ...prev,
-          preferredLanguage:
-            savedLanguage,
-        }));
+          setStudent((prev) => ({
+            ...prev,
+            preferredLanguage: savedLanguage,
+          }));
 
-        setCurrentLesson(aiLesson);
-        
-        // Auto-generate note from the lesson
-        const lessonContent = savedLesson.segments
-          .map((s: any) => `- ${s.title || s.concept}: ${s.description || s.content || ''}`)
-          .join('\n\n');
-        
-        const newNote: any = {
-          id: `note-${Date.now()}`,
-          title: `Study Notes: ${aiLesson.topicName}`,
-          content: lessonContent,
-          topicName: aiLesson.topicName,
-          isPinned: true,
-          tags: ['AI Generated', aiLesson.courseName || 'Topic'],
-          createdAt: new Date().toLocaleDateString(),
-          updatedAt: new Date().toLocaleDateString()
-        };
-        
-        setNotes((prev: any) => {
-          // Prevent duplicates if already added recently
-          if (prev.some((n: any) => n.topicName === aiLesson.topicName)) return prev;
-          return [newNote, ...prev];
-        });
+          setCurrentLesson(aiLesson);
 
-        handleNavigate('learn');
-        return;
+          // Auto-generate note from the lesson
+          const lessonContent = savedLesson.segments
+            .map((s: any) => `- ${s.title || s.concept}: ${s.description || s.content || ''}`)
+            .join('\n\n');
+
+          const newNote: any = {
+            id: `note-${Date.now()}`,
+            title: `Study Notes: ${aiLesson.topicName}`,
+            content: lessonContent,
+            topicName: aiLesson.topicName,
+            isPinned: true,
+            tags: ['AI Generated', aiLesson.courseName || 'Topic'],
+            createdAt: new Date().toLocaleDateString(),
+            updatedAt: new Date().toLocaleDateString(),
+          };
+
+          setNotes((prev: any) => {
+            // Prevent duplicates if already added recently
+            if (prev.some((n: any) => n.topicName === aiLesson.topicName)) return prev;
+            return [newNote, ...prev];
+          });
+
+          handleNavigate('learn');
+          return;
+        }
+      } catch (error) {
+        console.error('Could not load generated AI lesson:', error);
       }
-    } catch (error) {
-      console.error(
-        'Could not load generated AI lesson:',
-        error
-      );
-    }
 
-    // Safe fallback only if generation did not produce a lesson.
-    setCurrentLesson({
-      ...sampleLesson,
-      id: 'lesson-' + material.id,
-      topicName: material.title,
-      language:
-        student.preferredLanguage,
-    });
-    handleNavigate('learn');
-  };
+      // Safe fallback only if generation did not produce a lesson.
+      setCurrentLesson({
+        ...sampleLesson,
+        id: 'lesson-' + material.id,
+        topicName: material.title,
+        language: student.preferredLanguage,
+      });
+      handleNavigate('learn');
+    },
+    [student.preferredLanguage, handleNavigate]
+  );
 
-  const handleAddMaterial = (material: StudyMaterial) => {
+  const handleAddMaterial = useCallback((material: StudyMaterial) => {
     setMaterials((prev) => [material, ...prev]);
-  };
+  }, []);
 
   // Handlers for Roadmap
-  const handleSelectRoadmapStep = (step: RoadmapStep) => {
-    setCurrentLesson({
-      ...sampleLesson,
-      id: 'step-' + step.id,
-      topicName: step.title,
-      language: student.preferredLanguage,
-    });
-    handleNavigate('learn');
-  };
+  const handleSelectRoadmapStep = useCallback(
+    (step: RoadmapStep) => {
+      setCurrentLesson({
+        ...sampleLesson,
+        id: 'step-' + step.id,
+        topicName: step.title,
+        language: student.preferredLanguage,
+      });
+      handleNavigate('learn');
+    },
+    [student.preferredLanguage, handleNavigate]
+  );
 
-  const handleRegenerateRoadmap = () => {
+  const handleRegenerateRoadmap = useCallback(() => {
     setRoadmap((prev) => ({
       ...prev,
       steps: prev.steps.map((s, idx) =>
@@ -381,26 +374,27 @@ function MainApp() {
           ? {
               ...s,
               title: '3. Data Processing & Numerical Resistance Drill (AI Adapted)',
-              description: 'AI detected calculation errors in your latest assessment and added dynamic problem solving modules.',
+              description:
+                'AI detected calculation errors in your latest assessment and added dynamic problem solving modules.',
             }
           : s
       ),
     }));
-  };
+  }, []);
 
   // Handlers for Flashcards
-  const handleUpdateFlashcard = (updated: Flashcard) => {
+  const handleUpdateFlashcard = useCallback((updated: Flashcard) => {
     setFlashcards((prev) =>
       prev.map((card) => (card.id === updated.id ? updated : card))
     );
-  };
+  }, []);
 
-  const handleAddFlashcards = (newCards: Flashcard[]) => {
+  const handleAddFlashcards = useCallback((newCards: Flashcard[]) => {
     setFlashcards((prev) => [...newCards, ...prev]);
-  };
+  }, []);
 
   // Handlers for Notes
-  const handleSaveNote = (note: NoteItem) => {
+  const handleSaveNote = useCallback((note: NoteItem) => {
     setNotes((prev) => {
       const exists = prev.some((n) => n.id === note.id);
       if (exists) {
@@ -408,20 +402,20 @@ function MainApp() {
       }
       return [note, ...prev];
     });
-  };
+  }, []);
 
-  const handleDeleteNote = (id: string) => {
+  const handleDeleteNote = useCallback((id: string) => {
     setNotes((prev) => prev.filter((n) => n.id !== id));
-  };
+  }, []);
 
-  const handleTogglePinNote = (id: string) => {
+  const handleTogglePinNote = useCallback((id: string) => {
     setNotes((prev) =>
       prev.map((n) => (n.id === id ? { ...n, isPinned: !n.isPinned } : n))
     );
-  };
+  }, []);
 
   // Handlers for Quizzes
-  const handleSaveQuizResult = (result: QuizResult) => {
+  const handleSaveQuizResult = useCallback((result: QuizResult) => {
     setLastQuizResult(result);
     setStudent((prev) => ({
       ...prev,
@@ -438,31 +432,45 @@ function MainApp() {
         ...prev.assessmentHistory,
       ],
     }));
-  };
+  }, []);
 
-  const handleStartWeakPractice = (concept: string) => {
-    setCurrentLesson({
-      ...sampleLesson,
-      id: 'practice-' + Date.now(),
-      topicName: `Targeted Practice: ${concept}`,
-      language: student.preferredLanguage,
-    });
-    handleNavigate('learn');
-  };
+  const handleStartWeakPractice = useCallback(
+    (concept: string) => {
+      setCurrentLesson({
+        ...sampleLesson,
+        id: 'practice-' + Date.now(),
+        topicName: `Targeted Practice: ${concept}`,
+        language: student.preferredLanguage,
+      });
+      handleNavigate('learn');
+    },
+    [student.preferredLanguage, handleNavigate]
+  );
 
-  const handleExplainConcept = (conceptTitle: string) => {
-    setCurrentLesson({
-      ...sampleLesson,
-      id: 'explain-' + Date.now(),
-      topicName: `Concept Deep-Dive: ${conceptTitle}`,
-      language: student.preferredLanguage,
-    });
-    handleNavigate('learn');
-  };
+  const handleExplainConcept = useCallback(
+    (conceptTitle: string) => {
+      setCurrentLesson({
+        ...sampleLesson,
+        id: 'explain-' + Date.now(),
+        topicName: `Concept Deep-Dive: ${conceptTitle}`,
+        language: student.preferredLanguage,
+      });
+      handleNavigate('learn');
+    },
+    [student.preferredLanguage, handleNavigate]
+  );
 
-  const handleGenerateQuestionsFromConcept = (conceptTitle: string) => {
-    handleNavigate('quiz');
-  };
+  const handleGenerateQuestionsFromConcept = useCallback(
+    (conceptTitle: string) => {
+      handleNavigate('quiz');
+    },
+    [handleNavigate]
+  );
+
+  const handleOpenSummaryModal = useCallback(() => setIsSummaryModalOpen(true), []);
+  const handleCloseSummaryModal = useCallback(() => setIsSummaryModalOpen(false), []);
+  const handleTakeQuiz = useCallback(() => handleNavigate('quiz'), [handleNavigate]);
+  const handleUpdateProfile = useCallback((updated: StudentProfile) => setStudent(updated), []);
 
   return (
     <div className="min-h-screen bg-cloud text-ink flex flex-col font-nunito selection:bg-violet/100 selection:text-ink relative overflow-x-hidden">
@@ -495,7 +503,7 @@ function MainApp() {
               recentQuiz={lastQuizResult}
               onNavigate={handleNavigate}
               onStartWeakPractice={handleStartWeakPractice}
-              onOpenSummaryModal={() => setIsSummaryModalOpen(true)}
+              onOpenSummaryModal={handleOpenSummaryModal}
             />
           )}
 
@@ -507,7 +515,7 @@ function MainApp() {
               onLanguageChange={handleLanguageChange}
               onSaveNote={handleSaveNote}
               existingNotes={notes}
-              onTakeQuiz={() => handleNavigate('quiz')}
+              onTakeQuiz={handleTakeQuiz}
             />
           )}
 
@@ -578,7 +586,7 @@ function MainApp() {
           {currentPage === 'profile' && (
             <ProfileView
               student={student}
-              onUpdateProfile={(updated) => setStudent(updated)}
+              onUpdateProfile={handleUpdateProfile}
             />
           )}
         </main>
@@ -588,7 +596,7 @@ function MainApp() {
       <SummaryWorkspace
         materials={materials}
         isOpen={isSummaryModalOpen}
-        onClose={() => setIsSummaryModalOpen(false)}
+        onClose={handleCloseSummaryModal}
         onSaveToNotes={handleSaveNote}
         onNavigate={handleNavigate}
       />

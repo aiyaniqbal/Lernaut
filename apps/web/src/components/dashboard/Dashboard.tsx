@@ -31,7 +31,7 @@ import { DailyGoal } from './DailyGoal';
 import { LessonPath } from './LessonPath';
 import { TaskManager } from './TaskManager';
 
-export const Dashboard: React.FC<DashboardProps> = ({
+const DashboardComponent: React.FC<DashboardProps> = ({
   student,
   recentQuiz,
   onNavigate,
@@ -259,3 +259,5 @@ export const Dashboard: React.FC<DashboardProps> = ({
     </div>
   );
 };
+
+export const Dashboard = React.memo(DashboardComponent);

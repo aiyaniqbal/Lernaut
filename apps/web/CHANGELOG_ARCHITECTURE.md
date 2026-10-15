@@ -165,3 +165,56 @@ npm run build
 - `b1c1100`: Prisma standardization, seed migration, and type problem fixes.
 - `00ae7a1`: Live active leaderboard XP/ranking updates and 8-bit Pacman Ghost loader.
 - `c35c848`: Strict explicit typing of completed missions in `xp.ts`.
+
+---
+
+## 7. Deep Performance Audit & Optimization (October 15, 2026)
+
+### A. Database & Server-Side Performance
+1. **Achievement Seeding Cached Per Process**:
+   - `progression.ts`: Replaced 10 sequential `upsert` queries on every server action with an in-memory `achievementsSeeded` flag and a fast DB count check. Seeding now runs at most once per server process lifetime.
+2. **User Verification Caching**:
+   - `progression.ts`: Added `verifiedUsers` in-memory cache set. Subsequent calls to `ensureUser(userId)` bypass database roundtrips entirely if already verified and displayName hasn't changed.
+   - Combined `prisma.user.upsert` and `prisma.profile.upsert` using `Promise.all` for parallel execution.
+3. **Streak Recalculation Query Consolidation**:
+   - Reused the already-fetched `user` record in `recalculateStreak(user, today)` instead of re-fetching the user from DB.
+   - Combined `prisma.user.update` and `prisma.profile.updateMany` into a single `Promise.all` parallel batch.
+4. **Progression Context Parallelization**:
+   - `getProgressionContext`: Consolidated 5 sequential queries into 4 parallel queries via a single `Promise.all`.
+   - Eliminated the separate `prisma.lessonProgress.count` query by computing count directly from the fetched `lessons` array (`lessons.length`).
+5. **Leaderboard Query Optimization**:
+   - `getWeeklyLeaderboard`: Eliminated database searches for 6 fake fallback user IDs (`user-community-1`..`6`). The query now only touches real user IDs present in active `XpTransaction` rows and `currentUserId`.
+   - `getLifetimeLeaderboard`: Eliminated the redundant second `prisma.user.findMany` query. Reuses the top 50 users directly from the initial query and only fetches `currentUserId` if not already in the top 50.
+6. **Compound Database Index**:
+   - `schema.prisma`: Added `@@index([userId, status])` on `LessonProgress` to accelerate lesson status queries.
+7. **Prisma Logging**:
+   - `lib/prisma.ts`: Cleaned log settings to `['error']` to eliminate console warning noise during development.
+
+### B. Client-Side & React Optimization
+1. **Eliminated Aggressive Polling**:
+   - `DailyGoal.tsx`: Reduced DB polling frequency from 2 seconds (30 queries/min) to 30 seconds, a 93% reduction in polling overhead.
+   - Implemented reactive event-driven updates via custom window event `'lernaut:xp-updated'` and window `'focus'` event.
+2. **Event-Driven Instant XP Sync**:
+   - `TaskManager.tsx`, `AiTeacherWorkspace.tsx`, and `QuizWorkspace.tsx` dispatch `'lernaut:xp-updated'` immediately upon task/lesson/quiz XP awards. The dashboard progress dials and streak indicators update instantaneously with zero network latency.
+3. **Stabilized Handler References via `useCallback`**:
+   - `App.tsx`: Wrapped all 16 event and navigation handlers with `useCallback` and accurate dependency arrays (`handleNavigate`, `handleBack`, `handleLanguageChange`, `handleStartLessonWithMaterial`, `handleAddMaterial`, `handleSelectRoadmapStep`, `handleRegenerateRoadmap`, `handleUpdateFlashcard`, `handleAddFlashcards`, `handleSaveNote`, `handleDeleteNote`, `handleTogglePinNote`, `handleSaveQuizResult`, `handleStartWeakPractice`, `handleExplainConcept`, `handleGenerateQuestionsFromConcept`, `handleOpenSummaryModal`, `handleCloseSummaryModal`, `handleTakeQuiz`, `handleUpdateProfile`).
+4. **Targeted Component Memoization with `React.memo`**:
+   - Wrapped 16 heavy components with `React.memo` to eliminate cascading re-renders across route transitions and state changes:
+     - `Dashboard`, `DailyGoal`, `TaskManager`, `StreakWeek`, `LessonPath`
+     - `LeaderboardView`
+     - `AiTeacherWorkspace` (56KB component)
+     - `QuizWorkspace`
+     - `FlashcardWorkspace`
+     - `MaterialUpload`
+     - `RoadmapView`
+     - `MindMapView`
+     - `NotesWorkspace`
+     - `ProgressView`
+     - `ProfileView`
+     - `SummaryWorkspace`
+     - `Navbar`
+
+### C. Validation
+- `npx tsc --noEmit`: Passed with 0 errors.
+- `npm run build`: Full Next.js Turbopack production build succeeded with 0 errors and generated all static and dynamic routes.
+

@@ -19,7 +19,7 @@ interface RoadmapViewProps {
   onRegenerateRoadmap: () => void;
 }
 
-export const RoadmapView: React.FC<RoadmapViewProps> = ({
+const RoadmapViewComponent: React.FC<RoadmapViewProps> = ({
   roadmap,
   onSelectStep,
   onRegenerateRoadmap,
@@ -284,3 +284,5 @@ export const RoadmapView: React.FC<RoadmapViewProps> = ({
     </div>
   );
 };
+
+export const RoadmapView = React.memo(RoadmapViewComponent);

@@ -111,6 +111,7 @@ model LessonProgress {
 
   @@unique([userId, lessonId])
   @@index([userId])
+  @@index([userId, status])
 }
 
 // ─── Achievements ────────────────────────────────────────────────────────────

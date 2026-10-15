@@ -17,7 +17,7 @@ const INITIAL_TASKS: MissionTask[] = [
   { id: '5', label: '15 Min Focus Mode', xp: 60, completed: false },
 ];
 
-export const TaskManager: React.FC = () => {
+const TaskManagerComponent: React.FC = () => {
   const [tasks, setTasks] = useState<MissionTask[]>(INITIAL_TASKS);
 
   const loadCompleted = async () => {
@@ -68,6 +68,10 @@ export const TaskManager: React.FC = () => {
       const res = await addXp(taskXp, `mission_${id}`);
       if (res && res.alreadyCompleted) {
         console.info(res.message);
+      } else {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+        }
       }
     } catch (err) {
       console.error('Failed to add XP', err);
@@ -120,3 +124,5 @@ export const TaskManager: React.FC = () => {
     </div>
   );
 };
+
+export const TaskManager = React.memo(TaskManagerComponent);
