@@ -228,7 +228,11 @@ const QuizWorkspaceComponent: React.FC<QuizWorkspaceProps> = ({
         const progressionRes = await submitQuiz(userId, newResult.id, newResult.topic, score);
         console.log('[Quiz Progression] Awarded XP:', progressionRes.xpAwarded, 'Achievements:', progressionRes.newAchievements);
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+          window.dispatchEvent(
+            new CustomEvent('lernaut:xp-updated', {
+              detail: { snapshot: progressionRes.snapshot },
+            })
+          );
         }
       } catch (err) {
         console.warn('[Quiz Progression] Failed to persist quiz progression to DB:', err);

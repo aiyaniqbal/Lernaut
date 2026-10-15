@@ -649,7 +649,11 @@ const AiTeacherWorkspaceComponent: React.FC<
           .then((res) => {
             console.log('[Lesson Complete] Awarded XP:', res.xpAwarded, 'New achievements:', res.newAchievements);
             if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+              window.dispatchEvent(
+                new CustomEvent('lernaut:xp-updated', {
+                  detail: { snapshot: res.snapshot },
+                })
+              );
             }
           })
           .catch((err) => {
@@ -870,7 +874,11 @@ const AiTeacherWorkspaceComponent: React.FC<
             .then((res) => {
               console.log('[QuickCheck] Awarded XP:', res.xpAwarded);
               if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+                window.dispatchEvent(
+                  new CustomEvent('lernaut:xp-updated', {
+                    detail: { snapshot: res.snapshot },
+                  })
+                );
               }
             })
             .catch(console.error);

@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Zap } from 'lucide-react';
-import { getProfile } from '../../app/actions/xp';
-import { getLevelInfo } from '../../utils/xpUtils';
+import { getProgressSnapshot, ProgressSnapshot } from '../../app/actions/progression';
 import { getUserIdSync } from '../../hooks/useUserId';
 
 const DailyGoalComponent: React.FC = () => {
@@ -9,34 +8,46 @@ const DailyGoalComponent: React.FC = () => {
   const [goalXP, setGoalXP] = useState(100);
   const [currentLevel, setCurrentLevel] = useState(1);
 
-  useEffect(() => {
-    // Fetch initial XP on mount and set up reactive updates
-    const fetchXp = async () => {
-      const uid = getUserIdSync();
-      const profile = await getProfile(uid || undefined);
-      if (profile) {
-        const { level, xpIntoCurrentLevel, nextLevelXPRequired } = getLevelInfo(profile.totalXP);
-        setCurrentXP(xpIntoCurrentLevel);
-        setGoalXP(nextLevelXPRequired);
-        setCurrentLevel(level);
+  const fetchXp = useCallback(async () => {
+    const uid = getUserIdSync();
+    if (!uid) return;
+    try {
+      const snapshot = await getProgressSnapshot(uid);
+      if (snapshot) {
+        setCurrentXP(snapshot.xpIntoCurrentLevel);
+        setGoalXP(snapshot.nextLevelXPRequired);
+        setCurrentLevel(snapshot.currentLevel);
       }
-    };
+    } catch (err) {
+      console.warn('Could not fetch progression snapshot for daily goal:', err);
+    }
+  }, []);
+
+  useEffect(() => {
     fetchXp();
 
-    const handleUpdate = () => {
+    const handleUpdate = (e: any) => {
+      const snap: ProgressSnapshot | undefined = e?.detail?.snapshot;
+      if (snap) {
+        setCurrentXP(snap.xpIntoCurrentLevel);
+        setGoalXP(snap.nextLevelXPRequired);
+        setCurrentLevel(snap.currentLevel);
+        return;
+      }
       fetchXp();
     };
+
     window.addEventListener('lernaut:xp-updated', handleUpdate);
-    window.addEventListener('focus', handleUpdate);
+    window.addEventListener('focus', fetchXp);
 
     // Refresh every 30 seconds as background fallback
     const interval = setInterval(fetchXp, 30000);
     return () => {
       clearInterval(interval);
       window.removeEventListener('lernaut:xp-updated', handleUpdate);
-      window.removeEventListener('focus', handleUpdate);
+      window.removeEventListener('focus', fetchXp);
     };
-  }, []);
+  }, [fetchXp]);
 
   const percentage = Math.min((currentXP / goalXP) * 100, 100);
   const radius = 40;

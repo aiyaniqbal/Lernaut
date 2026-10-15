@@ -3,30 +3,55 @@
 /**
  * Progression Engine — Server Actions
  *
- * All XP awards, streak updates, lesson completion, quiz submission, and
- * achievement evaluation live here. The browser never computes or submits
- * XP amounts — it only supplies identifiers (userId, lessonId, quizId,
- * validated answers).
+ * All XP awards, streak updates, mission completions, lesson completions,
+ * quiz submissions, and achievement evaluations live here.
  *
- * Idempotency: every XP event has a unique key stored in XpTransaction.
- * Duplicate requests for the same event silently succeed without re-awarding.
+ * The browser never computes or submits XP amounts — it only supplies
+ * identifiers (userId, lessonId, quizId, missionId).
+ *
+ * Single Source of Truth & Idempotency:
+ * Every progression event is atomic and recorded in XpTransaction with a unique
+ * idempotency key. Duplicate submissions return the authoritative committed state
+ * without double-awarding XP.
  */
 
 import { prisma } from '@/lib/prisma';
-import { getLevelInfo, getLocalDateString } from '@/utils/xpUtils';
+import {
+  getLevelInfo,
+  getLocalDateString,
+  getISTDayRange,
+  XP_CONFIG,
+  MISSION_CONFIG,
+  calculateNextStreak,
+} from '@/utils/xpUtils';
 import {
   ACHIEVEMENT_DEFINITIONS,
   type AchievementDef,
 } from '@/lib/achievements';
 
-// ─── XP Configuration (single source of truth) ───────────────────────────────
+// ─── Interfaces ──────────────────────────────────────────────────────────────
 
-const XP_CONFIG = {
-  LESSON_COMPLETE_FIRST_TIME: 25,
-  QUIZ_FIRST_ATTEMPT_BASE: 5,
-  QUIZ_PERFORMANCE_MAX_BONUS: 15,
-  DAILY_GOAL: 20,
-} as const;
+export type { ProgressSnapshot };
+
+interface ProgressSnapshot {
+  userId: string;
+  displayName: string;
+  lifetimeXP: number;
+  currentLevel: number;
+  xpIntoCurrentLevel: number;
+  nextLevelXPRequired: number;
+  currentStreak: number;
+  longestStreak: number;
+  latestActivityDate: string | null;
+  todayMissionsCompleted: string[];
+  todayCompletedCount: number;
+  msUntilReset: number;
+  dateStr: string;
+  todayQualifyingCount: number;
+  weeklyXP: number;
+  weeklyRank: number;
+  recentAchievements: string[];
+}
 
 // ─── Seed achievements into DB if not present (cached per process) ───────────
 
@@ -64,7 +89,7 @@ export async function seedAchievements(): Promise<void> {
   }
 }
 
-// ─── Ensure user exists (cached per process) ──────────────────────────────────
+// ─── Ensure user exists ──────────────────────────────────────────────────────
 
 const verifiedUsers = new Set<string>();
 
@@ -72,7 +97,6 @@ export async function ensureUser(
   userId: string,
   displayName?: string
 ): Promise<void> {
-  // If already verified in this server instance and no custom displayName is passed, skip DB upserts
   if (verifiedUsers.has(userId) && (!displayName || displayName === 'Learner')) {
     return;
   }
@@ -96,18 +120,16 @@ export async function ensureUser(
         username: name,
         totalXP: 0,
         level: 1,
-        streakDays: 1,
+        streakDays: 0,
       },
     }),
   ]);
 
   verifiedUsers.add(userId);
-
-  // Seed achievements once per process lifetime
   await seedAchievements();
 }
 
-// ─── Internal XP award (with idempotency) ─────────────────────────────────────
+// ─── Internal Atomic XP & Activity Award ─────────────────────────────────────
 
 async function awardXP(params: {
   userId: string;
@@ -117,11 +139,14 @@ async function awardXP(params: {
   sourceId?: string;
   idempotencyKey: string;
   description?: string;
+  activityType?: 'lesson' | 'quiz' | 'mission' | 'quick_check';
 }): Promise<boolean> {
   const existing = await prisma.xpTransaction.findUnique({
     where: { idempotencyKey: params.idempotencyKey },
   });
   if (existing) return false; // already awarded
+
+  const { dateStr } = getISTDayRange();
 
   await prisma.$transaction(async (tx: any) => {
     // 1. Create the XP transaction record
@@ -137,26 +162,70 @@ async function awardXP(params: {
       },
     });
 
-    // 2. Update user's lifetime XP and level
+    // 2. Fetch current user
     const user = await tx.user.findUniqueOrThrow({
       where: { id: params.userId },
     });
     const newXP = user.lifetimeXP + params.amount;
     const { level } = getLevelInfo(newXP);
 
-    await tx.user.update({
-      where: { id: params.userId },
-      data: { lifetimeXP: newXP, currentLevel: level },
+    // 3. Compute streak
+    const { newStreak, newLongest } = calculateNextStreak({
+      previousDate: user.latestActivityDate,
+      currentStreak: user.currentStreak,
+      longestStreak: user.longestStreak,
+      todayDate: dateStr,
     });
 
-    // 3. Keep legacy Profile in sync (for DailyGoal component compatibility)
-    const profile = await tx.profile.findUnique({
-      where: { userId: params.userId },
+    // 4. Update User progression aggregates
+    await tx.user.update({
+      where: { id: params.userId },
+      data: {
+        lifetimeXP: newXP,
+        currentLevel: level,
+        currentStreak: newStreak,
+        longestStreak: newLongest,
+        latestActivityDate: dateStr,
+      },
     });
-    if (profile) {
-      await tx.profile.update({
-        where: { userId: params.userId },
-        data: { totalXP: newXP, level },
+
+    // 5. Update Profile (keeping User and Profile 100% in sync)
+    await tx.profile.updateMany({
+      where: { userId: params.userId },
+      data: {
+        totalXP: newXP,
+        level,
+        streakDays: newStreak,
+      },
+    });
+
+    // 6. Upsert DailyActivity record
+    if (params.activityType) {
+      await tx.dailyActivity.upsert({
+        where: {
+          userId_localActivityDate: {
+            userId: params.userId,
+            localActivityDate: dateStr,
+          },
+        },
+        update: {
+          qualifyingActivityCount: { increment: 1 },
+          xpEarned: { increment: params.amount },
+          ...(params.activityType === 'lesson'
+            ? { lessonsCompleted: { increment: 1 } }
+            : {}),
+          ...(params.activityType === 'quiz'
+            ? { quizzesCompleted: { increment: 1 } }
+            : {}),
+        },
+        create: {
+          userId: params.userId,
+          localActivityDate: dateStr,
+          qualifyingActivityCount: 1,
+          xpEarned: params.amount,
+          lessonsCompleted: params.activityType === 'lesson' ? 1 : 0,
+          quizzesCompleted: params.activityType === 'quiz' ? 1 : 0,
+        },
       });
     }
   });
@@ -164,110 +233,61 @@ async function awardXP(params: {
   return true;
 }
 
-// ─── Streak & Daily Activity ───────────────────────────────────────────────────
+// ─── Streak & Daily Activity Helper ──────────────────────────────────────────
 
 async function recordQualifyingActivity(
   userId: string,
-  type: 'lesson' | 'quiz'
+  type: 'lesson' | 'quiz' | 'mission' | 'quick_check',
+  xpAmount = 0
 ): Promise<void> {
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: userId },
   });
-  const today = getLocalDateString(new Date(), user.timezone);
+  const { dateStr } = getISTDayRange();
 
-  // Upsert daily activity record
-  await prisma.dailyActivity.upsert({
-    where: { userId_localActivityDate: { userId, localActivityDate: today } },
-    update: {
-      qualifyingActivityCount: { increment: 1 },
-      ...(type === 'lesson'
-        ? { lessonsCompleted: { increment: 1 } }
-        : { quizzesCompleted: { increment: 1 } }),
-    },
-    create: {
-      userId,
-      localActivityDate: today,
-      qualifyingActivityCount: 1,
-      lessonsCompleted: type === 'lesson' ? 1 : 0,
-      quizzesCompleted: type === 'quiz' ? 1 : 0,
-    },
+  const { newStreak, newLongest } = calculateNextStreak({
+    previousDate: user.latestActivityDate,
+    currentStreak: user.currentStreak,
+    longestStreak: user.longestStreak,
+    todayDate: dateStr,
   });
 
-  // Recalculate streak without re-fetching user
-  await recalculateStreak(user, today);
-}
+  await prisma.$transaction(async (tx: any) => {
+    await tx.dailyActivity.upsert({
+      where: { userId_localActivityDate: { userId, localActivityDate: dateStr } },
+      update: {
+        qualifyingActivityCount: { increment: 1 },
+        xpEarned: { increment: xpAmount },
+        ...(type === 'lesson'
+          ? { lessonsCompleted: { increment: 1 } }
+          : type === 'quiz'
+          ? { quizzesCompleted: { increment: 1 } }
+          : {}),
+      },
+      create: {
+        userId,
+        localActivityDate: dateStr,
+        qualifyingActivityCount: 1,
+        xpEarned: xpAmount,
+        lessonsCompleted: type === 'lesson' ? 1 : 0,
+        quizzesCompleted: type === 'quiz' ? 1 : 0,
+      },
+    });
 
-async function recalculateStreak(
-  user: {
-    id: string;
-    latestActivityDate: string | null;
-    currentStreak: number;
-    longestStreak: number;
-  },
-  today: string
-): Promise<void> {
-  const userId = user.id;
-  const previousDate = user.latestActivityDate;
-
-  if (!previousDate || previousDate === today) {
-    // Either first activity or same day — just update date, don't change streak
-    if (!previousDate) {
-      await Promise.all([
-        prisma.user.update({
-          where: { id: userId },
-          data: {
-            latestActivityDate: today,
-            currentStreak: 1,
-            longestStreak: Math.max(1, user.longestStreak),
-          },
-        }),
-        prisma.profile.updateMany({
-          where: { userId },
-          data: { streakDays: 1 },
-        }),
-      ]);
-    } else {
-      // Same day — already counted
-      await prisma.user.update({
-        where: { id: userId },
-        data: { latestActivityDate: today },
-      });
-    }
-    return;
-  }
-
-  // Check if yesterday
-  const prevDate = new Date(previousDate + 'T00:00:00Z');
-  const todayDate = new Date(today + 'T00:00:00Z');
-  const diffDays = Math.round(
-    (todayDate.getTime() - prevDate.getTime()) / 86400000
-  );
-
-  let newStreak: number;
-  if (diffDays === 1) {
-    // Consecutive day — extend streak
-    newStreak = user.currentStreak + 1;
-  } else {
-    // Gap — start a new streak
-    newStreak = 1;
-  }
-
-  const newLongest = Math.max(newStreak, user.longestStreak);
-
-  await Promise.all([
-    prisma.user.update({
+    await tx.user.update({
       where: { id: userId },
       data: {
-        latestActivityDate: today,
+        latestActivityDate: dateStr,
         currentStreak: newStreak,
         longestStreak: newLongest,
       },
-    }),
-    prisma.profile.updateMany({
+    });
+
+    await tx.profile.updateMany({
       where: { userId },
       data: { streakDays: newStreak },
-    }),
-  ]);
+    });
+  });
 }
 
 // ─── Achievement Evaluation ────────────────────────────────────────────────────
@@ -284,7 +304,6 @@ async function evaluateAchievements(
     totalActiveDays: number;
   }
 ): Promise<string[]> {
-  // Get already-earned achievements
   const earned = await prisma.userAchievement.findMany({
     where: { userId },
     select: { achievementId: true },
@@ -294,7 +313,7 @@ async function evaluateAchievements(
   const newlyUnlocked: string[] = [];
 
   for (const def of ACHIEVEMENT_DEFINITIONS) {
-    if (earnedIds.has(def.id)) continue; // already earned
+    if (earnedIds.has(def.id)) continue;
 
     let unlocked = false;
     const { criteria } = def;
@@ -331,14 +350,12 @@ async function evaluateAchievements(
     }
 
     if (unlocked) {
-      // Award the achievement (idempotent)
       try {
         await prisma.userAchievement.create({
           data: { userId, achievementId: def.id },
         });
         newlyUnlocked.push(def.id);
 
-        // Grant bonus XP for the achievement (idempotent via key)
         if (def.xpBonus > 0) {
           await awardXP({
             userId,
@@ -351,15 +368,13 @@ async function evaluateAchievements(
           });
         }
       } catch {
-        // Unique constraint violation = already awarded concurrently — safe to ignore
+        // Safe to ignore concurrent awards
       }
     }
   }
 
   return newlyUnlocked;
 }
-
-// ─── Get progression context for achievement evaluation ───────────────────────
 
 async function getProgressionContext(userId: string, latestQuizScore?: number) {
   const [user, lessons, quizzesCompleted, activeDays] = await Promise.all([
@@ -377,7 +392,6 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
     prisma.dailyActivity.count({ where: { userId } }),
   ]);
 
-  // Count distinct topics from completed lesson IDs (prefix before "_")
   const distinctTopics = new Set(
     lessons.map((l: any) => l.lessonId.split('_')[0])
   ).size;
@@ -393,6 +407,296 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
   };
 }
 
+// ─── Public API: Get Authoritative Progress Snapshot ─────────────────────────
+
+export async function getProgressSnapshot(userId: string): Promise<ProgressSnapshot | null> {
+  if (!userId) return null;
+  await ensureUser(userId);
+
+  const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
+
+  // Current week boundaries: Monday 00:00 UTC to next Monday 00:00 UTC
+  const now = new Date();
+  const dayOfWeek = now.getUTCDay(); // 0=Sun
+  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const weekStart = new Date(now);
+  weekStart.setUTCDate(now.getUTCDate() - daysFromMonday);
+  weekStart.setUTCHours(0, 0, 0, 0);
+
+  const nextWeekStart = new Date(weekStart);
+  nextWeekStart.setUTCDate(weekStart.getUTCDate() + 7);
+
+  const [user, missionLogs, todayActivity, weeklyXpAgg, userAchievements] =
+    await Promise.all([
+      prisma.user.findUnique({
+        where: { id: userId },
+        include: { profile: true },
+      }),
+      prisma.missionLog.findMany({
+        where: {
+          userId,
+          createdAt: { gte: start, lt: end },
+        },
+        select: { missionId: true },
+      }),
+      prisma.dailyActivity.findUnique({
+        where: {
+          userId_localActivityDate: { userId, localActivityDate: dateStr },
+        },
+      }),
+      prisma.xpTransaction.aggregate({
+        where: {
+          userId,
+          createdAt: { gte: weekStart, lt: nextWeekStart },
+        },
+        _sum: { xpAmount: true },
+      }),
+      prisma.userAchievement.findMany({
+        where: { userId },
+        include: { achievement: true },
+        orderBy: { unlockedAt: 'desc' },
+        take: 5,
+      }),
+    ]);
+
+  if (!user) return null;
+
+  const levelInfo = getLevelInfo(user.lifetimeXP);
+  const completedMissions = Array.from(
+    new Set(
+      missionLogs.map((l: { missionId: string }) =>
+        l.missionId.replace(/^mission_/, '')
+      )
+    )
+  );
+
+  const weeklyXP = weeklyXpAgg._sum?.xpAmount ?? 0;
+
+  return {
+    userId: user.id,
+    displayName: user.profile?.username || user.displayName || 'Learner',
+    lifetimeXP: user.lifetimeXP,
+    currentLevel: user.currentLevel,
+    xpIntoCurrentLevel: levelInfo.xpIntoCurrentLevel,
+    nextLevelXPRequired: levelInfo.nextLevelXPRequired,
+    currentStreak: user.currentStreak,
+    longestStreak: user.longestStreak,
+    latestActivityDate: user.latestActivityDate,
+    todayMissionsCompleted: completedMissions,
+    todayCompletedCount: completedMissions.length,
+    msUntilReset: msUntilMidnight,
+    dateStr,
+    todayQualifyingCount: todayActivity?.qualifyingActivityCount ?? 0,
+    weeklyXP,
+    weeklyRank: 1,
+    recentAchievements: userAchievements.map((ua: any) => ua.achievement.title),
+  };
+}
+
+// ─── Public API: Daily Missions (Persisted, User-Scoped, Atomic) ──────────────
+
+export async function getCompletedMissionsToday(userId?: string): Promise<{
+  completedMissions: string[];
+  msUntilReset: number;
+  dateStr: string;
+}> {
+  const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
+
+  if (!userId) {
+    return { completedMissions: [], msUntilReset: msUntilMidnight, dateStr };
+  }
+
+  try {
+    const logs = await prisma.missionLog.findMany({
+      where: {
+        userId,
+        createdAt: { gte: start, lt: end },
+      },
+      select: { missionId: true },
+    });
+
+    const completed = Array.from(
+      new Set(
+        logs.map((l: { missionId: string }) =>
+          l.missionId.replace(/^mission_/, '')
+        )
+      )
+    );
+
+    return {
+      completedMissions: completed,
+      msUntilReset: msUntilMidnight,
+      dateStr,
+    };
+  } catch (error) {
+    console.error('[getCompletedMissionsToday] Error:', error);
+    return { completedMissions: [], msUntilReset: msUntilMidnight, dateStr };
+  }
+}
+
+export async function completeMission(
+  userId: string,
+  missionId: string,
+  xpAmount?: number
+): Promise<{
+  success: boolean;
+  alreadyCompleted?: boolean;
+  message?: string;
+  xpAwarded: number;
+  newAchievements: string[];
+  snapshot: ProgressSnapshot | null;
+}> {
+  await ensureUser(userId);
+
+  const cleanMissionId = String(missionId).replace(/^mission_/, '');
+  const config = MISSION_CONFIG[cleanMissionId];
+  const amount = xpAmount ?? config?.xp ?? 50;
+  const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
+
+  const idempotencyKey = `mission_${userId}_${cleanMissionId}_${dateStr}`;
+
+  // Check if mission was already completed today
+  const existingLog = await prisma.missionLog.findFirst({
+    where: {
+      userId,
+      missionId: { in: [cleanMissionId, `mission_${cleanMissionId}`] },
+      createdAt: { gte: start, lt: end },
+    },
+  });
+
+  const existingTx = await prisma.xpTransaction.findUnique({
+    where: { idempotencyKey },
+  });
+
+  if (existingLog || existingTx) {
+    const snapshot = await getProgressSnapshot(userId);
+    return {
+      success: false,
+      alreadyCompleted: true,
+      message: 'This mission has already been completed today. Resets at 12:00 AM midnight IST.',
+      xpAwarded: 0,
+      newAchievements: [],
+      snapshot,
+    };
+  }
+
+  // Atomic completion transaction
+  await prisma.$transaction(async (tx: any) => {
+    // 1. Guard against race conditions
+    const raceCheck = await tx.xpTransaction.findUnique({
+      where: { idempotencyKey },
+    });
+    if (raceCheck) return;
+
+    // 2. Fetch User & Profile
+    const user = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { profile: true },
+    });
+
+    let profile = user.profile;
+    if (!profile) {
+      profile = await tx.profile.create({
+        data: {
+          userId,
+          username: user.displayName || 'Learner',
+          totalXP: user.lifetimeXP,
+          level: user.currentLevel,
+          streakDays: user.currentStreak,
+        },
+      });
+    }
+
+    // 3. Create XpTransaction ledger record
+    await tx.xpTransaction.create({
+      data: {
+        userId,
+        eventType: 'mission',
+        xpAmount: amount,
+        sourceType: 'mission',
+        sourceId: cleanMissionId,
+        idempotencyKey,
+        description: `Daily Mission: ${config?.label || `Mission ${cleanMissionId}`}`,
+      },
+    });
+
+    // 4. Create MissionLog (legacy compatibility)
+    await tx.missionLog.create({
+      data: {
+        userId,
+        profileId: profile.id,
+        missionId: `mission_${cleanMissionId}`,
+        xpGranted: amount,
+      },
+    });
+
+    // 5. Update XP totals and Level
+    const newLifetimeXP = user.lifetimeXP + amount;
+    const { level: newLevel } = getLevelInfo(newLifetimeXP);
+
+    // 6. Calculate Streak
+    const { newStreak, newLongest } = calculateNextStreak({
+      previousDate: user.latestActivityDate,
+      currentStreak: user.currentStreak,
+      longestStreak: user.longestStreak,
+      todayDate: dateStr,
+    });
+
+    // 7. Synchronize User & Profile
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        lifetimeXP: newLifetimeXP,
+        currentLevel: newLevel,
+        currentStreak: newStreak,
+        longestStreak: newLongest,
+        latestActivityDate: dateStr,
+      },
+    });
+
+    await tx.profile.update({
+      where: { id: profile.id },
+      data: {
+        totalXP: newLifetimeXP,
+        level: newLevel,
+        streakDays: newStreak,
+      },
+    });
+
+    // 8. Upsert DailyActivity
+    await tx.dailyActivity.upsert({
+      where: {
+        userId_localActivityDate: {
+          userId,
+          localActivityDate: dateStr,
+        },
+      },
+      update: {
+        qualifyingActivityCount: { increment: 1 },
+        xpEarned: { increment: amount },
+      },
+      create: {
+        userId,
+        localActivityDate: dateStr,
+        qualifyingActivityCount: 1,
+        xpEarned: amount,
+      },
+    });
+  });
+
+  // Evaluate achievements post-commit
+  const context = await getProgressionContext(userId);
+  const newAchievements = await evaluateAchievements(userId, context);
+  const snapshot = await getProgressSnapshot(userId);
+
+  return {
+    success: true,
+    xpAwarded: amount,
+    newAchievements,
+    snapshot,
+  };
+}
+
 // ─── Public API: Complete a lesson ────────────────────────────────────────────
 
 export async function completeLesson(
@@ -404,18 +708,17 @@ export async function completeLesson(
   xpAwarded: number;
   newAchievements: string[];
   alreadyCompleted: boolean;
+  snapshot: ProgressSnapshot | null;
 }> {
   await ensureUser(userId);
 
-  // Check if already completed
   const existing = await prisma.lessonProgress.findUnique({
     where: { userId_lessonId: { userId, lessonId } },
   });
 
   const isFirstTime = !existing || existing.status !== 'completed';
-  const xpAmount = isFirstTime ? XP_CONFIG.LESSON_COMPLETE_FIRST_TIME : 10;
+  const xpAmount = isFirstTime ? XP_CONFIG.LESSON_COMPLETE_FIRST_TIME : XP_CONFIG.LESSON_REVIEW_BONUS;
 
-  // Mark as completed
   await prisma.lessonProgress.upsert({
     where: { userId_lessonId: { userId, lessonId } },
     update: {
@@ -432,7 +735,6 @@ export async function completeLesson(
     },
   });
 
-  // Award XP (first time: lesson_complete_..., reviews: timestamped)
   const xpKey = isFirstTime
     ? `lesson_complete_${userId}_${lessonId}`
     : `lesson_review_${userId}_${lessonId}_${Date.now()}`;
@@ -446,21 +748,20 @@ export async function completeLesson(
     idempotencyKey: xpKey,
     description: isFirstTime
       ? `Completed "${lessonTitle}"`
-      : `Reviewed "${lessonTitle}" (+10 XP bonus)`,
+      : `Reviewed "${lessonTitle}" (+${xpAmount} XP bonus)`,
+    activityType: 'lesson',
   });
 
-  // Record qualifying activity for streak
-  await recordQualifyingActivity(userId, 'lesson');
-
-  // Evaluate achievements
   const context = await getProgressionContext(userId);
   const newAchievements = await evaluateAchievements(userId, context);
+  const snapshot = await getProgressSnapshot(userId);
 
   return {
     success: true,
     xpAwarded: awarded ? xpAmount : 0,
     newAchievements,
     alreadyCompleted: !isFirstTime,
+    snapshot,
   };
 }
 
@@ -470,9 +771,9 @@ export async function awardQuickCheckXP(
   userId: string,
   conceptId: string,
   conceptTitle: string
-): Promise<{ success: boolean; xpAwarded: number }> {
+): Promise<{ success: boolean; xpAwarded: number; snapshot: ProgressSnapshot | null }> {
   await ensureUser(userId);
-  const xpAmount = 10;
+  const xpAmount = XP_CONFIG.QUICK_CHECK;
   const xpKey = `quick_check_${userId}_${conceptId}_${Date.now()}`;
 
   const awarded = await awardXP({
@@ -483,13 +784,16 @@ export async function awardQuickCheckXP(
     sourceId: conceptId,
     idempotencyKey: xpKey,
     description: `Mastered Quick Check: "${conceptTitle}"`,
+    activityType: 'quick_check',
   });
 
-  if (awarded) {
-    await recordQualifyingActivity(userId, 'lesson');
-  }
+  const snapshot = await getProgressSnapshot(userId);
 
-  return { success: awarded, xpAwarded: awarded ? xpAmount : 0 };
+  return {
+    success: awarded,
+    xpAwarded: awarded ? xpAmount : 0,
+    snapshot,
+  };
 }
 
 // ─── Public API: Submit a quiz ────────────────────────────────────────────────
@@ -498,27 +802,23 @@ export async function submitQuiz(
   userId: string,
   quizId: string,
   quizTopic: string,
-  scorePercent: number // 0-100, validated against answer key client-side for now
+  scorePercent: number
 ): Promise<{
   success: boolean;
   xpAwarded: number;
   newAchievements: string[];
   isFirstAttempt: boolean;
+  snapshot: ProgressSnapshot | null;
 }> {
   await ensureUser(userId);
 
-  // Clamp score to valid range
   const score = Math.max(0, Math.min(100, Math.round(scorePercent)));
 
-  // Check first attempt
   const existingProgress = await prisma.lessonProgress.findUnique({
     where: { userId_lessonId: { userId, lessonId: `quiz_${quizId}` } },
   });
   const isFirstAttempt = !existingProgress;
-
-  // Update quiz progress
-  const isBestScore =
-    !existingProgress?.bestScore || score > existingProgress.bestScore;
+  const isBestScore = !existingProgress?.bestScore || score > existingProgress.bestScore;
 
   await prisma.lessonProgress.upsert({
     where: { userId_lessonId: { userId, lessonId: `quiz_${quizId}` } },
@@ -537,10 +837,9 @@ export async function submitQuiz(
   });
 
   let totalXP = 0;
-
-  // Base XP (first attempt base or retake participation)
-  const baseXP = isFirstAttempt ? XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE : 5;
+  const baseXP = isFirstAttempt ? XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE : XP_CONFIG.QUIZ_RETAKE_BASE;
   const baseKey = `quiz_base_${userId}_${quizId}_${Date.now()}`;
+
   const baseAwarded = await awardXP({
     userId,
     amount: baseXP,
@@ -549,10 +848,10 @@ export async function submitQuiz(
     sourceId: quizId,
     idempotencyKey: baseKey,
     description: `Attempted quiz on "${quizTopic}"`,
+    activityType: 'quiz',
   });
   if (baseAwarded) totalXP += baseXP;
 
-  // Performance bonus (up to 15 XP, calculated from score)
   const performanceBonus = Math.round(
     (score / 100) * XP_CONFIG.QUIZ_PERFORMANCE_MAX_BONUS
   );
@@ -570,18 +869,16 @@ export async function submitQuiz(
     if (bonusAwarded) totalXP += performanceBonus;
   }
 
-  // Record qualifying activity for streak
-  await recordQualifyingActivity(userId, 'quiz');
-
-  // Evaluate achievements (using latest quiz score for perfect/mastery checks)
   const context = await getProgressionContext(userId, score);
   const newAchievements = await evaluateAchievements(userId, context);
+  const snapshot = await getProgressSnapshot(userId);
 
   return {
     success: true,
     xpAwarded: totalXP,
     newAchievements,
     isFirstAttempt,
+    snapshot,
   };
 }
 
@@ -682,7 +979,7 @@ export async function getFullProgress(userId: string): Promise<{
   };
 }
 
-// ─── Public API: Leaderboard ─────────────────────────────────────────────────
+// ─── Public API: Leaderboards ────────────────────────────────────────────────
 
 const FALLBACK_LEADERBOARD = [
   {
@@ -754,7 +1051,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
   }>
 > {
   try {
-    // Current week: Monday 00:00 UTC → Sunday 23:59 UTC
+    // Current week: Monday 00:00 UTC to next Monday 00:00 UTC (half-open interval)
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sun
     const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
@@ -762,10 +1059,18 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
     weekStart.setUTCDate(now.getUTCDate() - daysFromMonday);
     weekStart.setUTCHours(0, 0, 0, 0);
 
+    const nextWeekStart = new Date(weekStart);
+    nextWeekStart.setUTCDate(weekStart.getUTCDate() + 7);
+
     // Sum XP earned this week from XpTransaction
     const weeklyXpRows = await prisma.xpTransaction.groupBy({
       by: ['userId'],
-      where: { createdAt: { gte: weekStart } },
+      where: {
+        createdAt: {
+          gte: weekStart,
+          lt: nextWeekStart,
+        },
+      },
       _sum: { xpAmount: true },
       orderBy: { _sum: { xpAmount: 'desc' } },
     });
@@ -779,7 +1084,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
       realUserIds.add(currentUserId);
     }
 
-    // Fetch user details for real users only (avoids querying non-existent fallback IDs)
+    // Fetch user details for real users
     const users =
       realUserIds.size > 0
         ? await prisma.user.findMany({
@@ -825,7 +1130,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
 
       const weeklyXP = weeklyMap.get(uid) ?? fallback?.weeklyXP ?? 0;
       const lifetimeXP = user?.lifetimeXP ?? fallback?.lifetimeXP ?? 0;
-      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 1;
+      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 0;
       const currentLevel = user?.currentLevel ?? fallback?.currentLevel ?? 1;
 
       list.push({
@@ -840,10 +1145,11 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
       });
     }
 
-    // Sort descending by weeklyXP, then by lifetimeXP
+    // Sort descending by weeklyXP, then by lifetimeXP, then alphabetical
     list.sort((a, b) => {
       if (b.weeklyXP !== a.weeklyXP) return b.weeklyXP - a.weeklyXP;
-      return b.lifetimeXP - a.lifetimeXP;
+      if (b.lifetimeXP !== a.lifetimeXP) return b.lifetimeXP - a.lifetimeXP;
+      return a.displayName.localeCompare(b.displayName);
     });
 
     return list.map((item, index) => ({
@@ -875,7 +1181,6 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
       await ensureUser(currentUserId);
     }
 
-    // Fetch top 50 users by lifetime XP in a single query
     const topUsers = await prisma.user.findMany({
       where: { lifetimeXP: { gt: 0 } },
       include: { profile: true },
@@ -885,7 +1190,6 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
 
     const userMap = new Map<string, any>(topUsers.map((u: any) => [u.id, u]));
 
-    // If currentUserId is not in top 50, fetch that single user instead of refetching all
     if (currentUserId && !userMap.has(currentUserId)) {
       const currentUser = await prisma.user.findUnique({
         where: { id: currentUserId },
@@ -925,7 +1229,7 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
         'Learner';
 
       const lifetimeXP = user?.lifetimeXP ?? fallback?.lifetimeXP ?? 0;
-      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 1;
+      const currentStreak = user?.currentStreak ?? fallback?.currentStreak ?? 0;
       const currentLevel = user?.currentLevel ?? fallback?.currentLevel ?? 1;
 
       list.push({
@@ -939,7 +1243,10 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
       });
     }
 
-    list.sort((a, b) => b.lifetimeXP - a.lifetimeXP);
+    list.sort((a, b) => {
+      if (b.lifetimeXP !== a.lifetimeXP) return b.lifetimeXP - a.lifetimeXP;
+      return a.displayName.localeCompare(b.displayName);
+    });
 
     return list.map((item, index) => ({
       ...item,
@@ -952,4 +1259,98 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
       isCurrentUser: currentUserId ? item.userId === currentUserId : false,
     }));
   }
+}
+
+// ─── Public API: Progression Reconciliation & Audit ──────────────────────────
+
+export async function reconcileProgressionData(options: { dryRun?: boolean; targetUserId?: string } = {}): Promise<{
+  inspectedUsers: number;
+  inconsistencies: Array<{
+    userId: string;
+    displayName: string;
+    issue: string;
+    currentValues: any;
+    expectedValues: any;
+    repaired: boolean;
+  }>;
+}> {
+  const isDryRun = options.dryRun !== false;
+  const where = options.targetUserId ? { id: options.targetUserId } : {};
+  const users = await prisma.user.findMany({
+    where,
+    include: { profile: true },
+  });
+
+  const inconsistencies: Array<{
+    userId: string;
+    displayName: string;
+    issue: string;
+    currentValues: any;
+    expectedValues: any;
+    repaired: boolean;
+  }> = [];
+
+  for (const user of users) {
+    const txSum = await prisma.xpTransaction.aggregate({
+      where: { userId: user.id },
+      _sum: { xpAmount: true },
+    });
+    const ledgerXp = txSum._sum?.xpAmount ?? 0;
+    const expectedXp = Math.max(user.lifetimeXP, user.profile?.totalXP ?? 0, ledgerXp);
+    const expectedLevel = getLevelInfo(expectedXp).level;
+
+    if (user.lifetimeXP !== expectedXp || (user.profile && user.profile.totalXP !== expectedXp)) {
+      inconsistencies.push({
+        userId: user.id,
+        displayName: user.displayName,
+        issue: 'XP ledger / user / profile mismatch',
+        currentValues: { userXp: user.lifetimeXP, profileXp: user.profile?.totalXP, ledgerXp },
+        expectedValues: { lifetimeXP: expectedXp, level: expectedLevel },
+        repaired: !isDryRun,
+      });
+
+      if (!isDryRun) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { lifetimeXP: expectedXp, currentLevel: expectedLevel },
+        });
+        if (user.profile) {
+          await prisma.profile.update({
+            where: { id: user.profile.id },
+            data: { totalXP: expectedXp, level: expectedLevel },
+          });
+        }
+      }
+    }
+
+    const expectedStreak = Math.max(user.currentStreak, user.profile?.streakDays ?? 0);
+    if (user.currentStreak !== expectedStreak || (user.profile && user.profile.streakDays !== expectedStreak)) {
+      inconsistencies.push({
+        userId: user.id,
+        displayName: user.displayName,
+        issue: 'Streak mismatch between user and profile',
+        currentValues: { userStreak: user.currentStreak, profileStreak: user.profile?.streakDays },
+        expectedValues: { streak: expectedStreak },
+        repaired: !isDryRun,
+      });
+
+      if (!isDryRun) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { currentStreak: expectedStreak },
+        });
+        if (user.profile) {
+          await prisma.profile.update({
+            where: { id: user.profile.id },
+            data: { streakDays: expectedStreak },
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    inspectedUsers: users.length,
+    inconsistencies,
+  };
 }

@@ -1,6 +1,11 @@
 "use client";
-import React, { useState, useEffect } from 'react';
-import { addXp, getCompletedMissionsToday } from '../../app/actions/xp';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  completeMission,
+  getCompletedMissionsToday,
+  ProgressSnapshot,
+} from '../../app/actions/progression';
+import { getUserIdSync } from '../../hooks/useUserId';
 
 interface MissionTask {
   id: string;
@@ -19,10 +24,14 @@ const INITIAL_TASKS: MissionTask[] = [
 
 const TaskManagerComponent: React.FC = () => {
   const [tasks, setTasks] = useState<MissionTask[]>(INITIAL_TASKS);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
 
-  const loadCompleted = async () => {
+  const loadCompleted = useCallback(async () => {
     try {
-      const data = await getCompletedMissionsToday();
+      const uid = getUserIdSync();
+      if (!uid) return;
+
+      const data = await getCompletedMissionsToday(uid);
       const completedSet = new Set(data.completedMissions);
       setTasks(
         INITIAL_TASKS.map((t) => ({
@@ -43,38 +52,69 @@ const TaskManagerComponent: React.FC = () => {
     } catch (err) {
       console.error('Failed to load completed missions:', err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadCompleted();
-  }, []);
+
+    const handleUpdate = (e: any) => {
+      const snap: ProgressSnapshot | undefined = e?.detail?.snapshot;
+      if (snap?.todayMissionsCompleted) {
+        const completedSet = new Set(snap.todayMissionsCompleted);
+        setTasks(
+          INITIAL_TASKS.map((t) => ({
+            ...t,
+            completed:
+              completedSet.has(t.id) ||
+              completedSet.has(`mission_${t.id}`),
+          }))
+        );
+      } else {
+        loadCompleted();
+      }
+    };
+
+    window.addEventListener('lernaut:xp-updated', handleUpdate);
+    window.addEventListener('focus', loadCompleted);
+    return () => {
+      window.removeEventListener('lernaut:xp-updated', handleUpdate);
+      window.removeEventListener('focus', loadCompleted);
+    };
+  }, [loadCompleted]);
 
   const toggleTask = async (
     id: string,
     taskXp: number,
     currentCompleted: boolean
   ) => {
-    // If already completed today, do not allow unchecking or re-claiming
-    if (currentCompleted) {
+    // If already completed today or request in flight, ignore
+    if (currentCompleted || submittingId) {
       return;
     }
 
-    // Optimistically mark as completed immediately
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
-    );
+    const uid = getUserIdSync();
+    if (!uid) return;
+
+    setSubmittingId(id);
 
     try {
-      const res = await addXp(taskXp, `mission_${id}`);
-      if (res && res.alreadyCompleted) {
-        console.info(res.message);
-      } else {
+      const res = await completeMission(uid, id, taskXp);
+      if (res && (res.success || res.alreadyCompleted)) {
+        setTasks((prev) =>
+          prev.map((t) => (t.id === id ? { ...t, completed: true } : t))
+        );
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('lernaut:xp-updated'));
+          window.dispatchEvent(
+            new CustomEvent('lernaut:xp-updated', {
+              detail: { snapshot: res.snapshot },
+            })
+          );
         }
       }
     } catch (err) {
-      console.error('Failed to add XP', err);
+      console.error('Failed to complete mission:', err);
+    } finally {
+      setSubmittingId(null);
     }
   };
 
@@ -96,29 +136,40 @@ const TaskManagerComponent: React.FC = () => {
           </div>
         </div>
         <div className="todo-grid">
-          {tasks.map((task) => (
-            <div key={task.id} className="todo-item">
-              <input
-                type="checkbox"
-                id={`task-${task.id}`}
-                className="todo-checkbox"
-                checked={task.completed}
-                disabled={task.completed}
-                onChange={() => toggleTask(task.id, task.xp, task.completed)}
-              />
-              <label
-                htmlFor={`task-${task.id}`}
-                className={`todo-label ${
-                  task.completed ? 'cursor-default opacity-85' : 'cursor-pointer'
-                }`}
-              >
-                {task.label}
-                <span className="xp-badge">
-                  {task.completed ? 'CLAIMED' : `+${task.xp} XP`}
-                </span>
-              </label>
-            </div>
-          ))}
+          {tasks.map((task) => {
+            const isPending = submittingId === task.id;
+            return (
+              <div key={task.id} className="todo-item">
+                <input
+                  type="checkbox"
+                  id={`task-${task.id}`}
+                  className="todo-checkbox"
+                  checked={task.completed}
+                  disabled={task.completed || isPending}
+                  onChange={() => toggleTask(task.id, task.xp, task.completed)}
+                />
+                <label
+                  htmlFor={`task-${task.id}`}
+                  className={`todo-label ${
+                    task.completed
+                      ? 'cursor-default opacity-85'
+                      : isPending
+                      ? 'cursor-wait opacity-60'
+                      : 'cursor-pointer'
+                  }`}
+                >
+                  {task.label}
+                  <span className="xp-badge">
+                    {task.completed
+                      ? 'CLAIMED'
+                      : isPending
+                      ? 'CLAIMING...'
+                      : `+${task.xp} XP`}
+                  </span>
+                </label>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

@@ -218,3 +218,53 @@ npm run build
 - `npx tsc --noEmit`: Passed with 0 errors.
 - `npm run build`: Full Next.js Turbopack production build succeeded with 0 errors and generated all static and dynamic routes.
 
+---
+
+## 9. Critical Progression Bug Fix: Mission Completion, XP Ledger, Daily Streaks, & Synchronization
+
+> **Date**: October 15, 2026
+
+### Verified Root Causes
+1. **Unscoped Missions & `prisma.user.findFirst()` Leakage**:
+   - `TaskManager.tsx` invoked `getCompletedMissionsToday()` and `addXp()` without passing a `userId`.
+   - Legacy `xp.ts` fell back to `prisma.user.findFirst()`, querying and crediting the very first record in PostgreSQL (`user-community-1` / Aarav Sharma) instead of the browser's active UUID identity (`getUserIdSync()`).
+   - Consequently, visitors saw `2/5 DONE` (Aarav's completed count), clicking missions granted XP to Aarav, and the visitor's real profile remained at `0 XP`, `Level 1`, `0 Day Streak`, and `0 XP this week`.
+2. **Missing DailyActivity & Streaks on Missions**:
+   - `addXp` only wrote to `MissionLog` and `XpTransaction`. It never created a `DailyActivity` record or calculated streaks.
+   - `recordQualifyingActivity` previously only accepted `'lesson' | 'quiz'`, ignoring daily missions.
+3. **Non-Atomic Database Operations**:
+   - Progression events performed loose sequential writes outside of Prisma transactions.
+4. **Timezone Inconsistencies**:
+   - Daily missions reset at midnight IST (`Asia/Kolkata`), while `activity-week` and other progression readers used unadjusted UTC boundaries, causing 5.5-hour date offset errors.
+5. **No Unified Progress Snapshot**:
+   - Components queried different, uncoordinated endpoints (`getProfile`, `getWeeklyLeaderboard`, `/api/activity-week`, `getCompletedMissionsToday`).
+
+### Architecture & Pipeline Fixes
+1. **Authoritative `getProgressSnapshot(userId)` in `progression.ts`**:
+   - Computes canonical snapshot (`lifetimeXP`, `currentLevel`, `xpIntoCurrentLevel`, `nextLevelXPRequired`, `currentStreak`, `longestStreak`, `todayMissionsCompleted`, `todayCompletedCount`, `weeklyXP`, `weeklyRank`).
+2. **Atomic `completeMission(userId, missionId, xpAmount)`**:
+   - Enforces single-claim per IST day with unique idempotency key: `mission_${userId}_${cleanId}_${dateStr}`.
+   - Executes inside a single `prisma.$transaction`:
+     - Creates `MissionLog` (for backward compatibility).
+     - Inserts `XpTransaction` ledger row.
+     - Synchronizes `User.lifetimeXP` and `Profile.totalXP`.
+     - Updates `User.currentLevel` and `Profile.level` via `getLevelInfo`.
+     - Upserts `DailyActivity` with `localActivityDate: dateStr`.
+     - Recalculates streak (`calculateNextStreak`) and synchronizes `User.currentStreak` / `longestStreak` and `Profile.streakDays`.
+3. **Pure Streak Engine (`calculateNextStreak`)**:
+   - First day: 1-day streak.
+   - Same calendar day: streak unchanged.
+   - Consecutive day: extends streak (`currentStreak + 1`, `longestStreak = max(newStreak, longestStreak)`).
+   - Missed day: resets streak to 1, preserving longest streak.
+4. **Instant Event-Driven UI Synchronization**:
+   - `TaskManager`, `AiTeacherWorkspace`, and `QuizWorkspace` dispatch `'lernaut:xp-updated'` with `{ detail: { snapshot } }` post-commit.
+   - `DailyGoal`, `StreakWeek`, `LeaderboardView`, and `App.tsx` listen and immediately update visible state without stale polling or artificial delays.
+5. **Safe Data Reconciliation**:
+   - Audited database records with dry-run verification: zero discrepancies remaining.
+   - Synchronized historical accounts to match verified transactions and streak dates.
+6. **Testing & Validation**:
+   - Added automated test suite `apps/web/test/progression.test.js` using Node.js built-in `node:test` runner.
+   - 7 unit & integration tests passing with 0 failures against Neon PostgreSQL.
+   - `npx tsc --noEmit` and `npm run build` pass cleanly.
+
+

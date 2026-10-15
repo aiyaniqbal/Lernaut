@@ -1,5 +1,5 @@
 /**
- * XP Level system.
+ * XP Level system & progression utilities.
  *
  * Cumulative XP required to reach level L:
  *   threshold(L) = 100 * (L - 1) + 25 * (L - 1) * (L - 2)
@@ -9,6 +9,26 @@
  *   L=5 → 700    L=6 → 1000   L=7 → 1350  L=8 → 1750
  *   L=9 → 2200   L=10 → 2700
  */
+
+// ─── XP & Mission Configuration ──────────────────────────────────────────────
+
+export const XP_CONFIG = {
+  LESSON_COMPLETE_FIRST_TIME: 25,
+  LESSON_REVIEW_BONUS: 10,
+  QUIZ_FIRST_ATTEMPT_BASE: 5,
+  QUIZ_RETAKE_BASE: 5,
+  QUIZ_PERFORMANCE_MAX_BONUS: 15,
+  QUICK_CHECK: 10,
+  DAILY_GOAL: 20,
+} as const;
+
+export const MISSION_CONFIG: Record<string, { label: string; xp: number }> = {
+  '1': { label: 'Complete Daily Lesson', xp: 50 },
+  '2': { label: 'Score 80%+ on Quiz', xp: 100 },
+  '3': { label: 'Practice Weak Area', xp: 75 },
+  '4': { label: 'Review Flashcards', xp: 40 },
+  '5': { label: '15 Min Focus Mode', xp: 60 },
+};
 
 export function cumulativeXpForLevel(level: number): number {
   if (level <= 1) return 0;
@@ -111,4 +131,63 @@ export function getISTDayRange(now = new Date()): {
   const msUntilMidnight = Math.max(0, end.getTime() - now.getTime());
 
   return { start, end, dateStr, msUntilMidnight };
+}
+
+/**
+ * Streak Calculation (Pure & Deterministic)
+ */
+export function calculateNextStreak(params: {
+  previousDate: string | null;
+  currentStreak: number;
+  longestStreak: number;
+  todayDate: string;
+}): {
+  newStreak: number;
+  newLongest: number;
+  isNewDay: boolean;
+} {
+  const { previousDate, currentStreak, longestStreak, todayDate } = params;
+
+  if (!previousDate) {
+    return {
+      newStreak: 1,
+      newLongest: Math.max(1, longestStreak),
+      isNewDay: true,
+    };
+  }
+
+  if (previousDate === todayDate) {
+    return {
+      newStreak: Math.max(1, currentStreak),
+      newLongest: Math.max(currentStreak, longestStreak),
+      isNewDay: false,
+    };
+  }
+
+  const [pY, pM, pD] = previousDate.split('-').map(Number);
+  const [tY, tM, tD] = todayDate.split('-').map(Number);
+  const prevUtc = Date.UTC(pY, pM - 1, pD);
+  const todayUtc = Date.UTC(tY, tM - 1, tD);
+  const diffDays = Math.round((todayUtc - prevUtc) / 86400000);
+
+  if (diffDays === 1) {
+    const newStreak = currentStreak + 1;
+    return {
+      newStreak,
+      newLongest: Math.max(newStreak, longestStreak),
+      isNewDay: true,
+    };
+  } else if (diffDays > 1) {
+    return {
+      newStreak: 1,
+      newLongest: Math.max(1, longestStreak),
+      isNewDay: true,
+    };
+  } else {
+    return {
+      newStreak: currentStreak,
+      newLongest: longestStreak,
+      isNewDay: false,
+    };
+  }
 }

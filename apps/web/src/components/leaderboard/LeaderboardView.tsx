@@ -60,6 +60,14 @@ const LeaderboardViewComponent: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+
+    const handleUpdate = () => {
+      fetchData();
+    };
+    window.addEventListener('lernaut:xp-updated', handleUpdate);
+    return () => {
+      window.removeEventListener('lernaut:xp-updated', handleUpdate);
+    };
   }, [period]);
 
   const top3 = entries.slice(0, 3);

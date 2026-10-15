@@ -5,7 +5,8 @@ import { LoginPage } from './components/auth/LoginPage';
 import { SignupPage } from './components/auth/SignupPage';
 import { LandingPage } from './components/landing/LandingPage';
 import { AuthProvider, useAuth } from './hooks/useAuth';
-import { useUserId } from './hooks/useUserId';
+import { useUserId, getUserIdSync } from './hooks/useUserId';
+import { getProgressSnapshot, ProgressSnapshot } from './app/actions/progression';
 import {
   PageId,
   Lesson,
@@ -231,6 +232,42 @@ function MainApp() {
 
   // Initialize and ensure active user in DB
   useUserId(student.name);
+
+  // Synchronize persistent progression (streaks, totalXP) into student profile
+  useEffect(() => {
+    const syncProgress = async () => {
+      const uid = getUserIdSync();
+      if (!uid) return;
+      try {
+        const snap = await getProgressSnapshot(uid);
+        if (snap) {
+          setStudent((prev) => ({
+            ...prev,
+            streakDays: snap.currentStreak,
+          }));
+        }
+      } catch (err) {
+        console.warn('Could not sync student progression:', err);
+      }
+    };
+
+    syncProgress();
+
+    const handleUpdate = (e: any) => {
+      const snap: ProgressSnapshot | undefined = e?.detail?.snapshot;
+      if (snap) {
+        setStudent((prev) => ({
+          ...prev,
+          streakDays: snap.currentStreak,
+        }));
+      } else {
+        syncProgress();
+      }
+    };
+
+    window.addEventListener('lernaut:xp-updated', handleUpdate);
+    return () => window.removeEventListener('lernaut:xp-updated', handleUpdate);
+  }, []);
 
   // Summary Modal state
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
