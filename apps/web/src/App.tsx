@@ -231,6 +231,16 @@ function MainApp() {
   const [lastQuizResult, setLastQuizResult] = useState<QuizResult>(sampleQuizResult);
 
   // Initialize and ensure active user in DB
+  const { user } = useAuth();
+  useEffect(() => {
+    if (user?.name) {
+      setStudent((prev) => ({
+        ...prev,
+        name: user.name,
+      }));
+    }
+  }, [user?.name]);
+
   useUserId(student.name);
 
   // Synchronize persistent progression (streaks, totalXP) into student profile

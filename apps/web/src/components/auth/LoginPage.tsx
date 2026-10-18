@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Code, Globe, ArrowLeft } from 'lucide-react';
+import { Code, Globe, ArrowLeft, AlertTriangle, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
 export const LoginPage: React.FC = () => {
@@ -8,17 +8,34 @@ export const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, loginWithCredentials } = useAuth();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setUnverifiedEmail(null);
 
-    const userName = email.split('@')[0] || 'Aiyan';
-    login({ email: email.trim(), name: userName });
-    setTimeout(() => navigate('/dashboard'), 400);
+    try {
+      const res = await loginWithCredentials(email.trim(), password);
+
+      if (res.success) {
+        navigate('/dashboard');
+      } else {
+        if (res.needsVerification) {
+          setUnverifiedEmail(email.trim());
+          setError('Your email is not verified yet. Please complete email OTP verification to log in.');
+        } else {
+          setError(res.error || 'Invalid email or password. Please try again.');
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to sign in. Please check your credentials.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -114,8 +131,19 @@ export const LoginPage: React.FC = () => {
             </div>
 
             {error && (
-              <div className="font-nunito font-bold text-xs text-[#FF5C7A] bg-[#FF5C7A]/10 border border-[#FF5C7A]/30 rounded-xl px-3.5 py-2.5 text-center mt-2 flex items-center justify-center gap-1.5">
-                <span>⚠ {error}</span>
+              <div className="font-nunito font-bold text-xs text-[#FF5C7A] bg-[#FF5C7A]/10 border border-[#FF5C7A]/30 rounded-xl px-3.5 py-2.5 text-center mt-2 flex flex-col items-center justify-center gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+                {unverifiedEmail && (
+                  <Link
+                    to="/signup"
+                    className="mt-1 text-[#6847FF] underline decoration-2 font-black text-xs hover:text-[#5638E8]"
+                  >
+                    Go to OTP Verification →
+                  </Link>
+                )}
               </div>
             )}
 
@@ -123,7 +151,7 @@ export const LoginPage: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full font-fredoka font-black text-white text-base tracking-wider uppercase rounded-xl py-3.5 transition-all duration-200 flex items-center justify-center gap-2 mt-4 cursor-pointer shadow-[0_8px_22px_rgba(104,71,255,0.32)] hover:shadow-[0_12px_28px_rgba(104,71,255,0.42)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] border border-white/20"
+              className="w-full font-fredoka font-black text-white text-base tracking-wider uppercase rounded-xl py-3.5 transition-all duration-200 flex items-center justify-center gap-2 mt-4 cursor-pointer shadow-[0_8px_22px_rgba(104,71,255,0.32)] hover:shadow-[0_12px_28px_rgba(104,71,255,0.42)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] border border-white/20 disabled:opacity-60"
               style={{
                 background: 'linear-gradient(135deg, #7655FF 0%, #6847FF 55%, #5638E8 100%)',
               }}

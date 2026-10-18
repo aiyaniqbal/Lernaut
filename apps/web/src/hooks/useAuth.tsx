@@ -1,11 +1,21 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import {
+  getCurrentUserSession,
+  loginWithEmail,
+  logoutSession,
+  registerWithEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
+  AuthActionResult,
+} from '@/app/actions/auth';
 
 export interface AuthUser {
   id: string;
   name: string;
   email: string;
+  learnerId?: string | null;
   avatarUrl?: string;
   levelTitle?: string;
 }
@@ -15,7 +25,12 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (userData: Partial<AuthUser> & { email: string; name?: string }, token?: string) => void;
-  logout: () => void;
+  loginWithCredentials: (email: string, password: string) => Promise<AuthActionResult>;
+  register: (name: string, email: string, password: string) => Promise<AuthActionResult>;
+  verifyOtp: (email: string, otp: string) => Promise<AuthActionResult>;
+  resendOtp: (email: string) => Promise<AuthActionResult>;
+  logout: () => Promise<void>;
+  refreshSession: () => Promise<void>;
 }
 
 const AUTH_STORAGE_KEY = 'lernaut_auth_user';
@@ -28,7 +43,12 @@ const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
   isLoading: true,
   login: () => {},
-  logout: () => {},
+  loginWithCredentials: async () => ({ success: false }),
+  register: async () => ({ success: false }),
+  verifyOtp: async () => ({ success: false }),
+  resendOtp: async () => ({ success: false }),
+  logout: async () => {},
+  refreshSession: async () => {},
 });
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -36,51 +56,149 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  useEffect(() => {
+  // Synchronize authenticated session state with server
+  const refreshSession = useCallback(async () => {
     try {
-      if (typeof window !== 'undefined') {
-        const storedSession = localStorage.getItem(AUTH_STORAGE_KEY);
-        const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem('token') || localStorage.getItem('edumind_token');
-        const storedUserId = localStorage.getItem(LEGACY_USER_ID_KEY);
-        const storedName = localStorage.getItem(DISPLAY_NAME_KEY);
+      const sessionResult = await getCurrentUserSession();
 
-        if (storedSession) {
-          const parsed = JSON.parse(storedSession);
-          if (parsed && parsed.email) {
-            setUser(parsed);
-            setIsAuthenticated(true);
-            setIsLoading(false);
-            return;
+      if (sessionResult.isAuthenticated && sessionResult.user) {
+        const u = sessionResult.user;
+        const authUser: AuthUser = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          learnerId: u.learnerId,
+          levelTitle: 'Scholar Tier IV',
+        };
+
+        setUser(authUser);
+        setIsAuthenticated(true);
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser));
+          if (u.learnerId) {
+            localStorage.setItem(LEGACY_USER_ID_KEY, u.learnerId);
+          }
+          if (u.name) {
+            localStorage.setItem(DISPLAY_NAME_KEY, u.name);
           }
         }
-
-        // If a valid token or persistent user id exists, initialize default active session
-        if (storedToken && storedUserId) {
-          const fallbackUser: AuthUser = {
-            id: storedUserId,
-            name: storedName || 'Aiyan Iqbal',
-            email: 'aiyaniqbal77@gmail.com',
-            levelTitle: 'Scholar Tier IV',
-          };
-          setUser(fallbackUser);
-          setIsAuthenticated(true);
-          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(fallbackUser));
-        } else {
-          setIsAuthenticated(false);
-          setUser(null);
+      } else {
+        // No active server session
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
         }
+        setUser(null);
+        setIsAuthenticated(false);
       }
     } catch (e) {
-      console.warn('Failed to parse auth session:', e);
-      setIsAuthenticated(false);
+      console.warn('Failed to verify session with server:', e);
       setUser(null);
+      setIsAuthenticated(false);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  useEffect(() => {
+    refreshSession();
+  }, [refreshSession]);
+
+  /**
+   * Register with Email & Password.
+   */
+  const register = async (name: string, email: string, password: string): Promise<AuthActionResult> => {
+    const activeLearnerId = typeof window !== 'undefined' ? localStorage.getItem(LEGACY_USER_ID_KEY) || undefined : undefined;
+    return await registerWithEmail({
+      name,
+      email,
+      password,
+      learnerId: activeLearnerId,
+    });
+  };
+
+  /**
+   * Verify 6-digit OTP received via Email.
+   */
+  const verifyOtp = async (email: string, otp: string): Promise<AuthActionResult> => {
+    const activeLearnerId = typeof window !== 'undefined' ? localStorage.getItem(LEGACY_USER_ID_KEY) || undefined : undefined;
+    const res = await verifyEmailOtp({
+      email,
+      otp,
+      learnerId: activeLearnerId,
+    });
+
+    if (res.success && res.user) {
+      const authUser: AuthUser = {
+        id: res.user.id,
+        name: res.user.name,
+        email: res.user.email,
+        learnerId: res.user.learnerId,
+        levelTitle: 'Scholar Tier IV',
+      };
+
+      setUser(authUser);
+      setIsAuthenticated(true);
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser));
+        if (res.user.learnerId) {
+          localStorage.setItem(LEGACY_USER_ID_KEY, res.user.learnerId);
+        }
+        if (res.user.name) {
+          localStorage.setItem(DISPLAY_NAME_KEY, res.user.name);
+        }
+      }
+    }
+
+    return res;
+  };
+
+  /**
+   * Resend 6-digit verification OTP.
+   */
+  const resendOtp = async (email: string): Promise<AuthActionResult> => {
+    return await resendEmailOtp({ email });
+  };
+
+  /**
+   * Sign In with Email & Password.
+   */
+  const loginWithCredentials = async (email: string, password: string): Promise<AuthActionResult> => {
+    const res = await loginWithEmail({ email, password });
+
+    if (res.success && res.user) {
+      const authUser: AuthUser = {
+        id: res.user.id,
+        name: res.user.name,
+        email: res.user.email,
+        learnerId: res.user.learnerId,
+        levelTitle: 'Scholar Tier IV',
+      };
+
+      setUser(authUser);
+      setIsAuthenticated(true);
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser));
+        if (res.user.learnerId) {
+          localStorage.setItem(LEGACY_USER_ID_KEY, res.user.learnerId);
+        }
+        if (res.user.name) {
+          localStorage.setItem(DISPLAY_NAME_KEY, res.user.name);
+        }
+      }
+    }
+
+    return res;
+  };
+
+  /**
+   * Legacy mock / quick demo login method.
+   */
   const login = (userData: Partial<AuthUser> & { email: string; name?: string }, token = 'session-active') => {
-    const userId = userData.id || localStorage.getItem(LEGACY_USER_ID_KEY) || crypto.randomUUID();
+    const userId = userData.id || (typeof window !== 'undefined' ? localStorage.getItem(LEGACY_USER_ID_KEY) : null) || crypto.randomUUID();
     const displayName = userData.name || userData.email.split('@')[0] || 'Learner';
 
     const fullUser: AuthUser = {
@@ -91,29 +209,50 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       levelTitle: userData.levelTitle || 'Scholar Tier IV',
     };
 
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(fullUser));
-    localStorage.setItem(TOKEN_STORAGE_KEY, token);
-    localStorage.setItem(LEGACY_USER_ID_KEY, userId);
-    localStorage.setItem(DISPLAY_NAME_KEY, displayName);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(fullUser));
+      localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      localStorage.setItem(LEGACY_USER_ID_KEY, userId);
+      localStorage.setItem(DISPLAY_NAME_KEY, displayName);
+    }
 
     setUser(fullUser);
     setIsAuthenticated(true);
   };
 
-  const logout = () => {
-    // Remove auth token and active session, but preserve user ID so student progress remains intact
-    localStorage.removeItem(AUTH_STORAGE_KEY);
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-    localStorage.removeItem('token');
-    localStorage.removeItem('edumind_token');
-    localStorage.removeItem('user');
+  /**
+   * Sign out current session and invalidate cookies.
+   */
+  const logout = async () => {
+    await logoutSession();
+
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem('token');
+      localStorage.removeItem('edumind_token');
+      localStorage.removeItem('user');
+    }
 
     setUser(null);
     setIsAuthenticated(false);
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated,
+        isLoading,
+        login,
+        loginWithCredentials,
+        register,
+        verifyOtp,
+        resendOtp,
+        logout,
+        refreshSession,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
