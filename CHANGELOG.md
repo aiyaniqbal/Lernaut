@@ -46,3 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added comprehensive security test suite in `apps/web/test/auth.test.js`:
   - 21 automated security tests passing with 0 failures.
   - Covers unverified account rejection, credential checks, OTP replay prevention, expired token handling, attempt limits, session invalidation on logout, demo isolation, and learner progression anti-hijacking.
+
+### 📧 Email OTP Delivery Fixes
+- **Gmail SMTP Configuration & Resiliency**:
+  - Configured Nodemailer with official `service: 'gmail'` transport and explicit timeouts (`connectionTimeout: 10000`, `socketTimeout: 15000`).
+  - Sanitized environment variables by stripping surrounding quotes and whitespace from `GMAIL_USER` and `GMAIL_APP_PASSWORD` to ensure clean RFC 5322 header generation.
+  - Synchronized Gmail SMTP environment variables between root `.env` and `apps/web/.env`.
+  - Removed silent dev fallback in `email.ts` that previously masked delivery failures.
+  - Forwarded Next.js request headers to `auth.api.sendVerificationOTP` in `registerWithEmail` and `resendEmailOtp` Server Actions.

@@ -182,22 +182,20 @@ export function buildOtpEmailHtml(email: string, otp: string, displayName?: stri
  * Creates the Nodemailer Gmail SMTP transporter.
  */
 function createTransporter() {
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
+  const user = (process.env.GMAIL_USER || '').replace(/['"]/g, '').trim();
+  const pass = (process.env.GMAIL_APP_PASSWORD || '').replace(/['"\s]/g, '').trim();
 
   if (!user || !pass) {
     return null;
   }
 
   return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // SSL/TLS
+    service: 'gmail',
     auth: {
       user,
       pass,
     },
-    connectionTimeout: 10000, // 10s connection timeout
+    connectionTimeout: 10000,
     greetingTimeout: 5000,
     socketTimeout: 15000,
   });
@@ -207,9 +205,8 @@ function createTransporter() {
  * Sends the 6-digit OTP email to the user.
  *
  * Supports:
- * - Real Gmail SMTP (when GMAIL_USER & GMAIL_APP_PASSWORD are set)
+ * - Real Gmail SMTP (service: 'gmail' via Nodemailer)
  * - Test mode (NODE_ENV === 'test'): records to mockSentEmails for automated test verification
- * - Development fallback: logs clean OTP notification to stdout
  */
 export async function sendVerificationEmail({
   email,
@@ -234,16 +231,19 @@ export async function sendVerificationEmail({
   }
 
   const transporter = createTransporter();
+  const user = (process.env.GMAIL_USER || '').replace(/['"]/g, '').trim();
 
-  // If no SMTP credentials provided in dev: log safe notice to console
   if (!transporter) {
-    console.info(`[Lernaut Email Service] GMAIL_USER not configured. Verification OTP for ${email}: ${otp} (valid for 15 min)`);
-    return { success: true, messageId: `dev-fallback-${Date.now()}` };
+    console.error('[Lernaut Email Service] ❌ GMAIL_USER or GMAIL_APP_PASSWORD is not configured in environment variables.');
+    return {
+      success: false,
+      error: 'Email service is not configured. Please check your GMAIL_USER and GMAIL_APP_PASSWORD settings.',
+    };
   }
 
   try {
-    const fromAddress = `"Lernaut Learning" <${process.env.GMAIL_USER}>`;
-    const subject = `Your Lernaut Verification Code: ${otp}`;
+    const fromAddress = `"Lernaut" <${user}>`;
+    const subject = `Your Lernaut verification code is ${otp}`;
     const html = buildOtpEmailHtml(email, otp, displayName);
     const text = `Your Lernaut verification code is: ${otp}\n\nThis code expires in 15 minutes.\nDo not share this code with anyone.\n\nIf you did not request this, please ignore this email.`;
 
@@ -255,10 +255,11 @@ export async function sendVerificationEmail({
       html,
     });
 
+    console.log(`[Lernaut Email Service] ✅ Successfully sent verification email to ${email} (MessageID: ${info.messageId})`);
     return { success: true, messageId: info.messageId };
   } catch (err: any) {
     // Never leak SMTP credentials or raw passwords in logs
-    console.error('[Lernaut Email Service] Failed to send email to', email, 'Error:', err?.message || err);
+    console.error('[Lernaut Email Service] ❌ Failed to send email to', email, 'Error:', err?.message || err);
     return {
       success: false,
       error: 'Failed to deliver verification email. Please check your email address and try again.',

@@ -112,11 +112,13 @@ export async function registerWithEmail({
     }
 
     try {
+      const reqHeaders = await headers();
       await auth.api.sendVerificationOTP({
         body: {
           email: cleanEmail,
           type: 'email-verification',
         },
+        headers: reqHeaders,
       });
       await recordOtpSend(cleanEmail);
 
@@ -352,11 +354,13 @@ export async function resendEmailOtp({
   }
 
   try {
+    const reqHeaders = await headers();
     await auth.api.sendVerificationOTP({
       body: {
         email: cleanEmail,
         type: 'email-verification',
       },
+      headers: reqHeaders,
     });
 
     await recordOtpSend(cleanEmail);
