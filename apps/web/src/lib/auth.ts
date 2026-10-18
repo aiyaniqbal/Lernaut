@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from '@better-auth/prisma-adapter';
 import { emailOTP } from 'better-auth/plugins';
+import { nextCookies } from 'better-auth/next-js';
 import { prisma } from '@/lib/prisma';
 import { sendVerificationEmail } from '@/lib/email';
 
@@ -81,6 +82,7 @@ export const auth = betterAuth({
         }
       },
     }),
+    nextCookies(),
   ],
 
   databaseHooks: {

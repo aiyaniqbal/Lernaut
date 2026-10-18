@@ -497,16 +497,174 @@ export async function getCurrentUserSession(): Promise<{
       where: { id: session.user.id },
     });
 
+    if (!authUser || !authUser.emailVerified) {
+      return { isAuthenticated: false, user: null };
+    }
+
     return {
       isAuthenticated: true,
       user: {
         id: session.user.id,
         name: session.user.name,
         email: session.user.email,
-        learnerId: authUser?.learnerId || null,
+        learnerId: authUser.learnerId || null,
       },
     };
   } catch (e) {
     return { isAuthenticated: false, user: null };
+  }
+}
+
+/**
+ * Authoritative session verification for server actions and sensitive operations.
+ * Throws if unauthenticated or email is unverified.
+ * Returns verified authUserId, learnerId, email, and name.
+ */
+export async function getAuthenticatedLearner(): Promise<{
+  authUserId: string;
+  learnerId: string;
+  name: string;
+  email: string;
+}> {
+  const reqHeaders = await headers();
+  const session = await auth.api.getSession({
+    headers: reqHeaders,
+  });
+
+  if (!session || !session.user || !session.user.id) {
+    throw new Error('UNAUTHORIZED: Valid authenticated session required.');
+  }
+
+  const authUser = await prisma.authUser.findUnique({
+    where: { id: session.user.id },
+  });
+
+  if (!authUser) {
+    throw new Error('UNAUTHORIZED: User account not found.');
+  }
+
+  if (!authUser.emailVerified) {
+    throw new Error('UNAUTHORIZED: Email verification required before performing this action.');
+  }
+
+  let learnerId = authUser.learnerId;
+  if (!learnerId) {
+    const newLearner = await prisma.user.create({
+      data: { displayName: authUser.name || 'Learner' },
+    });
+    await prisma.authUser.update({
+      where: { id: authUser.id },
+      data: { learnerId: newLearner.id },
+    });
+    learnerId = newLearner.id;
+  }
+
+  return {
+    authUserId: authUser.id,
+    learnerId,
+    name: authUser.name,
+    email: authUser.email,
+  };
+}
+
+const DEMO_GUEST_EMAIL = 'guest-demo@lernaut.com';
+const DEMO_GUEST_PASSWORD = 'LernautDemoGuest#2026!SecureSession';
+const DEMO_GUEST_LEARNER_ID = 'demo-guest-learner';
+
+/**
+ * Authenticates as an isolated, restricted Demo Guest.
+ * Issues a real server session without client-side spoofing or impersonating real accounts.
+ */
+export async function loginAsDemoGuest(): Promise<AuthActionResult> {
+  try {
+    const reqHeaders = await headers();
+
+    // 1. Ensure isolated demo learner exists in Neon PostgreSQL
+    const existingDemoLearner = await prisma.user.findUnique({
+      where: { id: DEMO_GUEST_LEARNER_ID },
+    });
+    if (!existingDemoLearner) {
+      await prisma.user.create({
+        data: {
+          id: DEMO_GUEST_LEARNER_ID,
+          displayName: 'Guest Explorer',
+          lifetimeXP: 100,
+          currentLevel: 1,
+          currentStreak: 1,
+        },
+      });
+      await prisma.profile.create({
+        data: {
+          userId: DEMO_GUEST_LEARNER_ID,
+          username: 'Guest Explorer',
+          totalXP: 100,
+          level: 1,
+          streakDays: 1,
+        },
+      });
+    }
+
+    // 2. Ensure demo guest auth account exists and is verified
+    let demoUser = await prisma.authUser.findUnique({
+      where: { email: DEMO_GUEST_EMAIL },
+    });
+
+    if (!demoUser) {
+      await auth.api.signUpEmail({
+        body: {
+          name: 'Guest Explorer',
+          email: DEMO_GUEST_EMAIL,
+          password: DEMO_GUEST_PASSWORD,
+          learnerId: DEMO_GUEST_LEARNER_ID,
+        },
+        headers: reqHeaders,
+      });
+
+      demoUser = await prisma.authUser.update({
+        where: { email: DEMO_GUEST_EMAIL },
+        data: {
+          emailVerified: true,
+          learnerId: DEMO_GUEST_LEARNER_ID,
+        },
+      });
+    } else if (!demoUser.emailVerified || demoUser.learnerId !== DEMO_GUEST_LEARNER_ID) {
+      demoUser = await prisma.authUser.update({
+        where: { id: demoUser.id },
+        data: {
+          emailVerified: true,
+          learnerId: DEMO_GUEST_LEARNER_ID,
+        },
+      });
+    }
+
+    // 3. Perform official signIn to issue HTTP-only session cookies
+    const signInResult = await auth.api.signInEmail({
+      body: {
+        email: DEMO_GUEST_EMAIL,
+        password: DEMO_GUEST_PASSWORD,
+      },
+      headers: reqHeaders,
+    });
+
+    if (!signInResult || !signInResult.user) {
+      return { success: false, error: 'Failed to create demo session.' };
+    }
+
+    return {
+      success: true,
+      message: 'Demo session started.',
+      user: {
+        id: signInResult.user.id,
+        name: 'Guest Explorer',
+        email: DEMO_GUEST_EMAIL,
+        learnerId: DEMO_GUEST_LEARNER_ID,
+      },
+    };
+  } catch (err: any) {
+    console.error('[Auth Action] loginAsDemoGuest error:', err?.message || err);
+    return {
+      success: false,
+      error: 'Could not initialize guest demo session. Please try again.',
+    };
   }
 }

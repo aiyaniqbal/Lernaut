@@ -10,10 +10,11 @@ import {
   getCompletedMissionsToday as getMissionsTodayAction,
   completeMission,
 } from './progression';
+import { getAuthenticatedLearner } from './auth';
 
 /**
  * Fetches the list of mission IDs completed today (resets at 12:00 AM IST).
- * Scoped to the provided userId.
+ * Scoped to the authenticated user.
  */
 export async function getCompletedMissionsToday(userId?: string): Promise<{
   completedMissions: string[];
@@ -25,36 +26,45 @@ export async function getCompletedMissionsToday(userId?: string): Promise<{
 
 /**
  * Grants XP to the current user.
- * Enforces single-claim per day, resetting at 12:00 AM midnight IST.
+ * Enforces authenticated session and single-claim per day, resetting at 12:00 AM midnight IST.
  */
 export async function addXp(amount: number, source: string, userId?: string) {
-  if (userId) {
-    const res = await completeMission(userId, source, amount);
-    return res;
-  }
+  try {
+    const authLearner = await getAuthenticatedLearner();
+    if (userId && userId !== authLearner.learnerId) {
+      return {
+        success: false,
+        error: 'FORBIDDEN: You cannot award XP for another user.',
+      };
+    }
 
-  console.warn(
-    '[xp.ts] addXp called without userId. To prevent cross-user leakage, userId is required.'
-  );
-  return {
-    success: false,
-    error: 'userId is required to add XP.',
-  };
+    const res = await completeMission(authLearner.learnerId, source, amount);
+    return res;
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Authentication required to add XP.',
+    };
+  }
 }
 
 /**
  * Fetches the user's profile (used by legacy components).
+ * Scoped strictly to the authenticated user.
  */
 export async function getProfile(userId?: string) {
-  if (!userId) return null;
   try {
+    const authLearner = await getAuthenticatedLearner();
+    if (userId && userId !== authLearner.learnerId) {
+      return null;
+    }
+
     const user = await prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: authLearner.learnerId },
       include: { profile: true },
     });
     return user?.profile || null;
   } catch (e) {
-    console.warn('Could not fetch profile for user:', userId, e);
     return null;
   }
 }

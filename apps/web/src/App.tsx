@@ -652,9 +652,63 @@ function MainApp() {
   );
 }
 
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F8F6FF]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-[#6847FF] border-t-transparent rounded-full animate-spin" />
+          <p className="font-nunito font-extrabold text-[#6847FF] text-sm tracking-wide">
+            Authenticating session...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return <>{children}</>;
+}
+
+function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F8F6FF]">
+        <div className="w-10 h-10 border-4 border-[#6847FF] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (isAuthenticated) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 function LandingRoute() {
   const navigate = useNavigate();
-  return <LandingPage onNavigateToApp={() => navigate('/dashboard')} />;
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <LandingPage
+      onNavigateToApp={() => {
+        if (isAuthenticated) {
+          navigate('/dashboard');
+        } else {
+          navigate('/login');
+        }
+      }}
+    />
+  );
 }
 
 export default function App() {
@@ -663,9 +717,30 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<LandingRoute />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/signup" element={<SignupPage />} />
-          <Route path="/*" element={<MainApp />} />
+          <Route
+            path="/login"
+            element={
+              <PublicOnlyRoute>
+                <LoginPage />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/signup"
+            element={
+              <PublicOnlyRoute>
+                <SignupPage />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/*"
+            element={
+              <ProtectedRoute>
+                <MainApp />
+              </ProtectedRoute>
+            }
+          />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

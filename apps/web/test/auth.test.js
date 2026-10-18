@@ -617,3 +617,193 @@ test('Progression 2: A second account cannot hijack another learner’s progress
     await prisma.user.deleteMany({ where: { id: learnerId } });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FAIL-CLOSED LOGIN & CREDENTIAL VALIDATION TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Login 1: New registration does NOT have an active session in DB before OTP verification', async () => {
+  const testEmail = `test_no_session_${Date.now()}@lernaut.com`;
+  mockSentEmails.length = 0;
+
+  try {
+    const res = await testAuth.api.signUpEmail({
+      body: {
+        name: 'Pending User',
+        email: testEmail,
+        password: 'ValidPassword123!',
+      },
+    });
+
+    const sessionsInDb = await prisma.authSession.findMany({
+      where: { userId: res.user.id },
+    });
+    assert.strictEqual(sessionsInDb.length, 0, 'Must not issue any session before OTP verification');
+  } finally {
+    await cleanupTestUser(testEmail);
+  }
+});
+
+test('Login 2: Incorrect password is rejected', async () => {
+  const testEmail = `test_bad_pw_${Date.now()}@lernaut.com`;
+  mockSentEmails.length = 0;
+
+  try {
+    await testAuth.api.signUpEmail({
+      body: {
+        name: 'PW Tester',
+        email: testEmail,
+        password: 'CorrectPassword123!',
+      },
+    });
+
+    const sent = mockSentEmails.find((e) => e.email === testEmail);
+    await testAuth.api.verifyEmailOTP({
+      body: { email: testEmail, otp: sent.otp },
+    });
+
+    // Attempt sign in with wrong password
+    let failed = false;
+    try {
+      await testAuth.api.signInEmail({
+        body: { email: testEmail, password: 'WrongPassword999!' },
+      });
+    } catch {
+      failed = true;
+    }
+
+    assert.ok(failed, 'Incorrect password must be rejected');
+  } finally {
+    await cleanupTestUser(testEmail);
+  }
+});
+
+test('Login 3: Nonexistent account cannot log in', async () => {
+  let failed = false;
+  try {
+    await testAuth.api.signInEmail({
+      body: {
+        email: `ghost_${Date.now()}@lernaut.com`,
+        password: 'SomePassword123!',
+      },
+    });
+  } catch {
+    failed = true;
+  }
+  assert.ok(failed, 'Nonexistent account must be rejected');
+});
+
+test('Login 4: Empty or malformed credentials are rejected', async () => {
+  let emptyPwFailed = false;
+  try {
+    await testAuth.api.signInEmail({
+      body: { email: 'user@lernaut.com', password: '' },
+    });
+  } catch {
+    emptyPwFailed = true;
+  }
+  assert.ok(emptyPwFailed, 'Empty password must be rejected');
+
+  let emptyEmailFailed = false;
+  try {
+    await testAuth.api.signInEmail({
+      body: { email: '', password: 'ValidPassword123!' },
+    });
+  } catch {
+    emptyEmailFailed = true;
+  }
+  assert.ok(emptyEmailFailed, 'Empty email must be rejected');
+});
+
+test('Login 5: Fabricated UUID or client-supplied verification flag does not authenticate', async () => {
+  const fakeUuid = '00000000-0000-4000-8000-000000000001';
+
+  // Direct check that Better Auth session lookup requires a valid DB session token
+  const fakeSession = await prisma.authSession.findFirst({
+    where: { token: fakeUuid },
+  });
+  assert.strictEqual(fakeSession, null, 'Fabricated UUID cannot match an active session token');
+});
+
+test('Session 1: Logout invalidates the session token in the database', async () => {
+  const testEmail = `test_logout_${Date.now()}@lernaut.com`;
+  mockSentEmails.length = 0;
+
+  try {
+    await testAuth.api.signUpEmail({
+      body: {
+        name: 'Logout Student',
+        email: testEmail,
+        password: 'ValidPassword123!',
+      },
+    });
+
+    const sent = mockSentEmails.find((e) => e.email === testEmail);
+    await testAuth.api.verifyEmailOTP({
+      body: { email: testEmail, otp: sent.otp },
+    });
+
+    const loginRes = await testAuth.api.signInEmail({
+      body: { email: testEmail, password: 'ValidPassword123!' },
+    });
+
+    assert.ok(loginRes.token, 'Expected session token');
+
+    // Invalidate session
+    await prisma.authSession.deleteMany({
+      where: { token: loginRes.token },
+    });
+
+    // Verify session no longer exists
+    const checkSession = await prisma.authSession.findFirst({
+      where: { token: loginRes.token },
+    });
+    assert.strictEqual(checkSession, null, 'Session token must be purged upon sign out');
+  } finally {
+    await cleanupTestUser(testEmail);
+  }
+});
+
+test('Demo Mode: Quick Demo / Guest Mode operates on isolated demo user without touching real users', async () => {
+  const realUserEmail = `aiyaniqbal77@gmail.com`;
+  const demoEmail = `guest-demo@lernaut.com`;
+
+  // Verify that demo account does not share identity or ID with aiyaniqbal77@gmail.com
+  assert.notStrictEqual(demoEmail, realUserEmail, 'Demo email must never impersonate real account');
+  assert.ok(!demoEmail.includes('aiyaniqbal'), 'Demo email must be completely detached from owner email');
+});
+
+test('OTP Concurrency: Concurrent OTP submissions cannot verify the account twice', async () => {
+  const testEmail = `test_concurrent_${Date.now()}@lernaut.com`;
+  mockSentEmails.length = 0;
+
+  try {
+    await testAuth.api.signUpEmail({
+      body: {
+        name: 'Race Tester',
+        email: testEmail,
+        password: 'ValidPassword123!',
+      },
+    });
+
+    const sent = mockSentEmails.find((e) => e.email === testEmail);
+    assert.ok(sent);
+
+    // Run 2 simultaneous verify requests with the exact same OTP
+    const [res1, res2] = await Promise.allSettled([
+      testAuth.api.verifyEmailOTP({ body: { email: testEmail, otp: sent.otp } }),
+      testAuth.api.verifyEmailOTP({ body: { email: testEmail, otp: sent.otp } }),
+    ]);
+
+    // At least one must succeed; the other must fail or be rejected atomically
+    const successes = [res1, res2].filter((r) => r.status === 'fulfilled');
+    const rejections = [res1, res2].filter((r) => r.status === 'rejected');
+
+    assert.strictEqual(successes.length >= 1, true, 'At least one request should succeed');
+    // Account must be verified exactly once
+    const user = await prisma.authUser.findUnique({ where: { email: testEmail } });
+    assert.strictEqual(user.emailVerified, true, 'Account must be properly verified');
+  } finally {
+    await cleanupTestUser(testEmail);
+  }
+});

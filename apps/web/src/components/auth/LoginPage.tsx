@@ -10,7 +10,24 @@ export const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { login, loginWithCredentials } = useAuth();
+  const { loginDemoGuest, loginWithCredentials } = useAuth();
+
+  const handleDemoLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await loginDemoGuest();
+      if (res.success) {
+        navigate('/dashboard');
+      } else {
+        setError(res.error || 'Failed to initialize demo session.');
+      }
+    } catch (err: any) {
+      setError('Could not connect to demo session.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,21 +190,17 @@ export const LoginPage: React.FC = () => {
             <div className="mt-8 flex gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  login({ email: 'aiyaniqbal77@gmail.com', name: 'Aiyan Iqbal' });
-                  navigate('/dashboard');
-                }}
-                className="flex-1 font-fredoka font-bold text-[#252046] bg-white hover:bg-[#F8F6FF] border-2 border-[#E4DFFF] hover:border-[#6847FF]/50 rounded-xl py-2.5 transition-all duration-200 flex items-center justify-center gap-2 text-xs cursor-pointer shadow-[0_2px_8px_rgba(37,32,70,0.04)] hover:shadow-[0_4px_14px_rgba(104,71,255,0.12)] hover:-translate-y-0.5 active:translate-y-0"
+                disabled={loading}
+                onClick={handleDemoLogin}
+                className="flex-1 font-fredoka font-bold text-[#252046] bg-white hover:bg-[#F8F6FF] border-2 border-[#E4DFFF] hover:border-[#6847FF]/50 rounded-xl py-2.5 transition-all duration-200 flex items-center justify-center gap-2 text-xs cursor-pointer shadow-[0_2px_8px_rgba(37,32,70,0.04)] hover:shadow-[0_4px_14px_rgba(104,71,255,0.12)] hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
               >
                 <Code className="w-3.5 h-3.5 text-[#6847FF]" /> Quick Demo
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  login({ email: 'learner@lernaut.com', name: 'Learner' });
-                  navigate('/dashboard');
-                }}
-                className="flex-1 font-fredoka font-bold text-[#252046] bg-white hover:bg-[#F8F6FF] border-2 border-[#E4DFFF] hover:border-[#6847FF]/50 rounded-xl py-2.5 transition-all duration-200 flex items-center justify-center gap-2 text-xs cursor-pointer shadow-[0_2px_8px_rgba(37,32,70,0.04)] hover:shadow-[0_4px_14px_rgba(104,71,255,0.12)] hover:-translate-y-0.5 active:translate-y-0"
+                disabled={loading}
+                onClick={handleDemoLogin}
+                className="flex-1 font-fredoka font-bold text-[#252046] bg-white hover:bg-[#F8F6FF] border-2 border-[#E4DFFF] hover:border-[#6847FF]/50 rounded-xl py-2.5 transition-all duration-200 flex items-center justify-center gap-2 text-xs cursor-pointer shadow-[0_2px_8px_rgba(37,32,70,0.04)] hover:shadow-[0_4px_14px_rgba(104,71,255,0.12)] hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
               >
                 <Globe className="w-3.5 h-3.5 text-[#6847FF]" /> Guest Mode
               </button>

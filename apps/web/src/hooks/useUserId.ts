@@ -23,12 +23,8 @@ export function useUserId(displayName?: string): string | null {
   const [userId, setUserId] = useState<string | null>(() => getUserIdSync());
 
   useEffect(() => {
-    // Get or create a stable UUID for this browser (supporting legacy migration)
-    let id = localStorage.getItem(USER_ID_KEY) || localStorage.getItem(LEGACY_USER_ID_KEY);
-    if (!id) {
-      id = crypto.randomUUID();
-    }
-    localStorage.setItem(USER_ID_KEY, id);
+    const id = getUserIdSync();
+    if (!id) return;
 
     // Store display name if provided
     if (displayName) {
@@ -41,8 +37,8 @@ export function useUserId(displayName?: string): string | null {
       localStorage.getItem(LEGACY_USER_NAME_KEY) ||
       'Learner';
 
-    // Ensure user exists in DB
-    ensureUser(id, storedName).catch(console.error);
+    // Ensure authenticated user exists in DB
+    ensureUser(id, storedName).catch(() => {});
 
     setUserId((prev) => (prev !== id ? id : prev));
   }, [displayName]);
@@ -53,26 +49,26 @@ export function useUserId(displayName?: string): string | null {
 /** Synchronous read of userId — safe only after mount */
 export function getUserIdSync(): string | null {
   if (typeof window === 'undefined') return null;
-  let id = localStorage.getItem(USER_ID_KEY) || localStorage.getItem(LEGACY_USER_ID_KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    try {
-      localStorage.setItem(USER_ID_KEY, id);
-    } catch (e) {
-      console.warn('Could not store user ID in localStorage:', e);
+  try {
+    const authUserStr = localStorage.getItem('lernaut_auth_user');
+    if (authUserStr) {
+      const parsed = JSON.parse(authUserStr);
+      if (parsed?.learnerId) {
+        return parsed.learnerId;
+      }
     }
-  }
-  return id;
+  } catch {}
+
+  const id = localStorage.getItem(USER_ID_KEY) || localStorage.getItem(LEGACY_USER_ID_KEY);
+  return id || null;
 }
 
 /** Set display name and persist */
 export function setDisplayName(name: string): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(USER_NAME_KEY, name);
-  const userId =
-    localStorage.getItem(USER_ID_KEY) ||
-    localStorage.getItem(LEGACY_USER_ID_KEY);
+  const userId = getUserIdSync();
   if (userId) {
-    ensureUser(userId, name).catch(console.error);
+    ensureUser(userId, name).catch(() => {});
   }
 }

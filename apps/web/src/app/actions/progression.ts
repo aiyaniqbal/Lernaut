@@ -28,6 +28,7 @@ import {
   ACHIEVEMENT_DEFINITIONS,
   type AchievementDef,
 } from '@/lib/achievements';
+import { getAuthenticatedLearner } from './auth';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -97,11 +98,22 @@ export async function ensureUser(
   userId: string,
   displayName?: string
 ): Promise<void> {
+  // Fail-closed security: ensure caller is authenticated and authorized to mutate this learner
+  try {
+    const authLearner = await getAuthenticatedLearner();
+    if (userId && userId !== authLearner.learnerId) {
+      return;
+    }
+  } catch {
+    // Unauthenticated visitors cannot create or modify DB learner records
+    return;
+  }
+
   if (verifiedUsers.has(userId) && (!displayName || displayName === 'Learner')) {
     return;
   }
 
-  const name = displayName && displayName !== 'Learner' ? displayName : 'Aiyan';
+  const name = displayName && displayName !== 'Learner' ? displayName : 'Learner';
 
   await Promise.all([
     prisma.user.upsert({
@@ -409,9 +421,20 @@ async function getProgressionContext(userId: string, latestQuizScore?: number) {
 
 // ─── Public API: Get Authoritative Progress Snapshot ─────────────────────────
 
-export async function getProgressSnapshot(userId: string): Promise<ProgressSnapshot | null> {
-  if (!userId) return null;
-  await ensureUser(userId);
+export async function getProgressSnapshot(userId?: string): Promise<ProgressSnapshot | null> {
+  let targetUserId = userId;
+  try {
+    const authLearner = await getAuthenticatedLearner();
+    if (userId && userId !== authLearner.learnerId) {
+      return null;
+    }
+    targetUserId = authLearner.learnerId;
+  } catch {
+    return null;
+  }
+
+  if (!targetUserId) return null;
+  await ensureUser(targetUserId);
 
   const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
 
@@ -429,30 +452,30 @@ export async function getProgressSnapshot(userId: string): Promise<ProgressSnaps
   const [user, missionLogs, todayActivity, weeklyXpAgg, userAchievements] =
     await Promise.all([
       prisma.user.findUnique({
-        where: { id: userId },
+        where: { id: targetUserId },
         include: { profile: true },
       }),
       prisma.missionLog.findMany({
         where: {
-          userId,
+          userId: targetUserId,
           createdAt: { gte: start, lt: end },
         },
         select: { missionId: true },
       }),
       prisma.dailyActivity.findUnique({
         where: {
-          userId_localActivityDate: { userId, localActivityDate: dateStr },
+          userId_localActivityDate: { userId: targetUserId, localActivityDate: dateStr },
         },
       }),
       prisma.xpTransaction.aggregate({
         where: {
-          userId,
+          userId: targetUserId,
           createdAt: { gte: weekStart, lt: nextWeekStart },
         },
         _sum: { xpAmount: true },
       }),
       prisma.userAchievement.findMany({
-        where: { userId },
+        where: { userId: targetUserId },
         include: { achievement: true },
         orderBy: { unlockedAt: 'desc' },
         take: 5,
@@ -502,14 +525,25 @@ export async function getCompletedMissionsToday(userId?: string): Promise<{
 }> {
   const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
 
-  if (!userId) {
+  let targetUserId = userId;
+  try {
+    const authLearner = await getAuthenticatedLearner();
+    if (userId && userId !== authLearner.learnerId) {
+      return { completedMissions: [], msUntilReset: msUntilMidnight, dateStr };
+    }
+    targetUserId = authLearner.learnerId;
+  } catch {
+    return { completedMissions: [], msUntilReset: msUntilMidnight, dateStr };
+  }
+
+  if (!targetUserId) {
     return { completedMissions: [], msUntilReset: msUntilMidnight, dateStr };
   }
 
   try {
     const logs = await prisma.missionLog.findMany({
       where: {
-        userId,
+        userId: targetUserId,
         createdAt: { gte: start, lt: end },
       },
       select: { missionId: true },
@@ -546,19 +580,25 @@ export async function completeMission(
   newAchievements: string[];
   snapshot: ProgressSnapshot | null;
 }> {
-  await ensureUser(userId);
+  const authLearner = await getAuthenticatedLearner();
+  const targetUserId = authLearner.learnerId;
+  if (userId && userId !== targetUserId) {
+    throw new Error('FORBIDDEN: You cannot complete missions for another user.');
+  }
+
+  await ensureUser(targetUserId);
 
   const cleanMissionId = String(missionId).replace(/^mission_/, '');
   const config = MISSION_CONFIG[cleanMissionId];
   const amount = xpAmount ?? config?.xp ?? 50;
   const { start, end, dateStr, msUntilMidnight } = getISTDayRange();
 
-  const idempotencyKey = `mission_${userId}_${cleanMissionId}_${dateStr}`;
+  const idempotencyKey = `mission_${targetUserId}_${cleanMissionId}_${dateStr}`;
 
   // Check if mission was already completed today
   const existingLog = await prisma.missionLog.findFirst({
     where: {
-      userId,
+      userId: targetUserId,
       missionId: { in: [cleanMissionId, `mission_${cleanMissionId}`] },
       createdAt: { gte: start, lt: end },
     },
@@ -569,7 +609,7 @@ export async function completeMission(
   });
 
   if (existingLog || existingTx) {
-    const snapshot = await getProgressSnapshot(userId);
+    const snapshot = await getProgressSnapshot(targetUserId);
     return {
       success: false,
       alreadyCompleted: true,
@@ -590,7 +630,7 @@ export async function completeMission(
 
     // 2. Fetch User & Profile
     const user = await tx.user.findUniqueOrThrow({
-      where: { id: userId },
+      where: { id: targetUserId },
       include: { profile: true },
     });
 
@@ -598,7 +638,7 @@ export async function completeMission(
     if (!profile) {
       profile = await tx.profile.create({
         data: {
-          userId,
+          userId: targetUserId,
           username: user.displayName || 'Learner',
           totalXP: user.lifetimeXP,
           level: user.currentLevel,
@@ -610,7 +650,7 @@ export async function completeMission(
     // 3. Create XpTransaction ledger record
     await tx.xpTransaction.create({
       data: {
-        userId,
+        userId: targetUserId,
         eventType: 'mission',
         xpAmount: amount,
         sourceType: 'mission',
@@ -623,7 +663,7 @@ export async function completeMission(
     // 4. Create MissionLog (legacy compatibility)
     await tx.missionLog.create({
       data: {
-        userId,
+        userId: targetUserId,
         profileId: profile.id,
         missionId: `mission_${cleanMissionId}`,
         xpGranted: amount,
@@ -644,7 +684,7 @@ export async function completeMission(
 
     // 7. Synchronize User & Profile
     await tx.user.update({
-      where: { id: userId },
+      where: { id: targetUserId },
       data: {
         lifetimeXP: newLifetimeXP,
         currentLevel: newLevel,
@@ -667,7 +707,7 @@ export async function completeMission(
     await tx.dailyActivity.upsert({
       where: {
         userId_localActivityDate: {
-          userId,
+          userId: targetUserId,
           localActivityDate: dateStr,
         },
       },
@@ -676,7 +716,7 @@ export async function completeMission(
         xpEarned: { increment: amount },
       },
       create: {
-        userId,
+        userId: targetUserId,
         localActivityDate: dateStr,
         qualifyingActivityCount: 1,
         xpEarned: amount,
@@ -685,9 +725,9 @@ export async function completeMission(
   });
 
   // Evaluate achievements post-commit
-  const context = await getProgressionContext(userId);
-  const newAchievements = await evaluateAchievements(userId, context);
-  const snapshot = await getProgressSnapshot(userId);
+  const context = await getProgressionContext(targetUserId);
+  const newAchievements = await evaluateAchievements(targetUserId, context);
+  const snapshot = await getProgressSnapshot(targetUserId);
 
   return {
     success: true,
@@ -710,24 +750,30 @@ export async function completeLesson(
   alreadyCompleted: boolean;
   snapshot: ProgressSnapshot | null;
 }> {
-  await ensureUser(userId);
+  const authLearner = await getAuthenticatedLearner();
+  const targetUserId = authLearner.learnerId;
+  if (userId && userId !== targetUserId) {
+    throw new Error('FORBIDDEN: You cannot complete lessons for another user.');
+  }
+
+  await ensureUser(targetUserId);
 
   const existing = await prisma.lessonProgress.findUnique({
-    where: { userId_lessonId: { userId, lessonId } },
+    where: { userId_lessonId: { userId: targetUserId, lessonId } },
   });
 
   const isFirstTime = !existing || existing.status !== 'completed';
   const xpAmount = isFirstTime ? XP_CONFIG.LESSON_COMPLETE_FIRST_TIME : XP_CONFIG.LESSON_REVIEW_BONUS;
 
   await prisma.lessonProgress.upsert({
-    where: { userId_lessonId: { userId, lessonId } },
+    where: { userId_lessonId: { userId: targetUserId, lessonId } },
     update: {
       status: 'completed',
       attempts: { increment: 1 },
       completedAt: new Date(),
     },
     create: {
-      userId,
+      userId: targetUserId,
       lessonId,
       status: 'completed',
       attempts: 1,
@@ -736,11 +782,11 @@ export async function completeLesson(
   });
 
   const xpKey = isFirstTime
-    ? `lesson_complete_${userId}_${lessonId}`
-    : `lesson_review_${userId}_${lessonId}_${Date.now()}`;
+    ? `lesson_complete_${targetUserId}_${lessonId}`
+    : `lesson_review_${targetUserId}_${lessonId}_${Date.now()}`;
 
   const awarded = await awardXP({
-    userId,
+    userId: targetUserId,
     amount: xpAmount,
     eventType: isFirstTime ? 'lesson_complete' : 'lesson_review',
     sourceType: 'lesson',
@@ -752,9 +798,9 @@ export async function completeLesson(
     activityType: 'lesson',
   });
 
-  const context = await getProgressionContext(userId);
-  const newAchievements = await evaluateAchievements(userId, context);
-  const snapshot = await getProgressSnapshot(userId);
+  const context = await getProgressionContext(targetUserId);
+  const newAchievements = await evaluateAchievements(targetUserId, context);
+  const snapshot = await getProgressSnapshot(targetUserId);
 
   return {
     success: true,
@@ -772,12 +818,18 @@ export async function awardQuickCheckXP(
   conceptId: string,
   conceptTitle: string
 ): Promise<{ success: boolean; xpAwarded: number; snapshot: ProgressSnapshot | null }> {
-  await ensureUser(userId);
+  const authLearner = await getAuthenticatedLearner();
+  const targetUserId = authLearner.learnerId;
+  if (userId && userId !== targetUserId) {
+    throw new Error('FORBIDDEN: You cannot record quick checks for another user.');
+  }
+
+  await ensureUser(targetUserId);
   const xpAmount = XP_CONFIG.QUICK_CHECK;
-  const xpKey = `quick_check_${userId}_${conceptId}_${Date.now()}`;
+  const xpKey = `quick_check_${targetUserId}_${conceptId}_${Date.now()}`;
 
   const awarded = await awardXP({
-    userId,
+    userId: targetUserId,
     amount: xpAmount,
     eventType: 'quick_check',
     sourceType: 'concept',
@@ -787,7 +839,7 @@ export async function awardQuickCheckXP(
     activityType: 'quick_check',
   });
 
-  const snapshot = await getProgressSnapshot(userId);
+  const snapshot = await getProgressSnapshot(targetUserId);
 
   return {
     success: awarded,
@@ -810,25 +862,31 @@ export async function submitQuiz(
   isFirstAttempt: boolean;
   snapshot: ProgressSnapshot | null;
 }> {
-  await ensureUser(userId);
+  const authLearner = await getAuthenticatedLearner();
+  const targetUserId = authLearner.learnerId;
+  if (userId && userId !== targetUserId) {
+    throw new Error('FORBIDDEN: You cannot submit quizzes for another user.');
+  }
+
+  await ensureUser(targetUserId);
 
   const score = Math.max(0, Math.min(100, Math.round(scorePercent)));
 
   const existingProgress = await prisma.lessonProgress.findUnique({
-    where: { userId_lessonId: { userId, lessonId: `quiz_${quizId}` } },
+    where: { userId_lessonId: { userId: targetUserId, lessonId: `quiz_${quizId}` } },
   });
   const isFirstAttempt = !existingProgress;
   const isBestScore = !existingProgress?.bestScore || score > existingProgress.bestScore;
 
   await prisma.lessonProgress.upsert({
-    where: { userId_lessonId: { userId, lessonId: `quiz_${quizId}` } },
+    where: { userId_lessonId: { userId: targetUserId, lessonId: `quiz_${quizId}` } },
     update: {
       attempts: { increment: 1 },
       ...(isBestScore ? { bestScore: score } : {}),
       status: 'completed',
     },
     create: {
-      userId,
+      userId: targetUserId,
       lessonId: `quiz_${quizId}`,
       status: 'completed',
       attempts: 1,
@@ -838,10 +896,10 @@ export async function submitQuiz(
 
   let totalXP = 0;
   const baseXP = isFirstAttempt ? XP_CONFIG.QUIZ_FIRST_ATTEMPT_BASE : XP_CONFIG.QUIZ_RETAKE_BASE;
-  const baseKey = `quiz_base_${userId}_${quizId}_${Date.now()}`;
+  const baseKey = `quiz_base_${targetUserId}_${quizId}_${Date.now()}`;
 
   const baseAwarded = await awardXP({
-    userId,
+    userId: targetUserId,
     amount: baseXP,
     eventType: 'quiz_submit',
     sourceType: 'quiz',
@@ -856,9 +914,9 @@ export async function submitQuiz(
     (score / 100) * XP_CONFIG.QUIZ_PERFORMANCE_MAX_BONUS
   );
   if (performanceBonus > 0) {
-    const bonusKey = `quiz_perf_${userId}_${quizId}_${Date.now()}`;
+    const bonusKey = `quiz_perf_${targetUserId}_${quizId}_${Date.now()}`;
     const bonusAwarded = await awardXP({
-      userId,
+      userId: targetUserId,
       amount: performanceBonus,
       eventType: 'quiz_performance_bonus',
       sourceType: 'quiz',
@@ -869,9 +927,9 @@ export async function submitQuiz(
     if (bonusAwarded) totalXP += performanceBonus;
   }
 
-  const context = await getProgressionContext(userId, score);
-  const newAchievements = await evaluateAchievements(userId, context);
-  const snapshot = await getProgressSnapshot(userId);
+  const context = await getProgressionContext(targetUserId, score);
+  const newAchievements = await evaluateAchievements(targetUserId, context);
+  const snapshot = await getProgressSnapshot(targetUserId);
 
   return {
     success: true,
@@ -912,9 +970,15 @@ export async function getFullProgress(userId: string): Promise<{
   }>;
   weeklyActivity: Array<{ date: string; xpEarned: number }>;
 } | null> {
-  await ensureUser(userId);
+  const authLearner = await getAuthenticatedLearner();
+  const targetUserId = authLearner.learnerId;
+  if (userId && userId !== targetUserId) {
+    throw new Error('FORBIDDEN: You cannot view progress details for another user.');
+  }
 
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  await ensureUser(targetUserId);
+
+  const user = await prisma.user.findUnique({ where: { id: targetUserId } });
   if (!user) return null;
 
   const levelInfo = getLevelInfo(user.lifetimeXP);
@@ -922,32 +986,32 @@ export async function getFullProgress(userId: string): Promise<{
   const [lessonsCompleted, quizActivity, activeDays, recentXp, userAchievements, weeklyActivity] =
     await Promise.all([
       prisma.lessonProgress.count({
-        where: { userId, status: 'completed', lessonId: { not: { startsWith: 'quiz_' } } },
+        where: { userId: targetUserId, status: 'completed', lessonId: { not: { startsWith: 'quiz_' } } },
       }),
       prisma.dailyActivity.aggregate({
-        where: { userId },
+        where: { userId: targetUserId },
         _sum: { quizzesCompleted: true },
       }),
-      prisma.dailyActivity.count({ where: { userId } }),
+      prisma.dailyActivity.count({ where: { userId: targetUserId } }),
       prisma.xpTransaction.findMany({
-        where: { userId },
+        where: { userId: targetUserId },
         orderBy: { createdAt: 'desc' },
         take: 20,
       }),
       prisma.userAchievement.findMany({
-        where: { userId },
+        where: { userId: targetUserId },
         include: { achievement: true },
         orderBy: { unlockedAt: 'desc' },
       }),
       prisma.dailyActivity.findMany({
-        where: { userId },
+        where: { userId: targetUserId },
         orderBy: { localActivityDate: 'desc' },
         take: 7,
       }),
     ]);
 
   return {
-    userId,
+    userId: targetUserId,
     displayName: user.displayName,
     lifetimeXP: user.lifetimeXP,
     currentLevel: user.currentLevel,
@@ -1050,6 +1114,12 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
     isCurrentUser?: boolean;
   }>
 > {
+  let activeUserId = currentUserId;
+  try {
+    const authLearner = await getAuthenticatedLearner();
+    activeUserId = authLearner.learnerId;
+  } catch {}
+
   try {
     // Current week: Monday 00:00 UTC to next Monday 00:00 UTC (half-open interval)
     const now = new Date();
@@ -1079,9 +1149,9 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
     for (const r of weeklyXpRows) {
       realUserIds.add(r.userId);
     }
-    if (currentUserId) {
-      await ensureUser(currentUserId);
-      realUserIds.add(currentUserId);
+    if (activeUserId) {
+      await ensureUser(activeUserId);
+      realUserIds.add(activeUserId);
     }
 
     // Fetch user details for real users
@@ -1141,7 +1211,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
         currentStreak,
         currentLevel,
         rank: 0,
-        isCurrentUser: currentUserId ? uid === currentUserId : false,
+        isCurrentUser: activeUserId ? uid === activeUserId : false,
       });
     }
 
@@ -1160,7 +1230,7 @@ export async function getWeeklyLeaderboard(currentUserId?: string): Promise<
     console.warn('[Leaderboard] getWeeklyLeaderboard fallback to community rankings:', err);
     return FALLBACK_LEADERBOARD.map((item) => ({
       ...item,
-      isCurrentUser: currentUserId ? item.userId === currentUserId : false,
+      isCurrentUser: activeUserId ? item.userId === activeUserId : false,
     }));
   }
 }
@@ -1176,9 +1246,15 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
     isCurrentUser?: boolean;
   }>
 > {
+  let activeUserId = currentUserId;
   try {
-    if (currentUserId) {
-      await ensureUser(currentUserId);
+    const authLearner = await getAuthenticatedLearner();
+    activeUserId = authLearner.learnerId;
+  } catch {}
+
+  try {
+    if (activeUserId) {
+      await ensureUser(activeUserId);
     }
 
     const topUsers = await prisma.user.findMany({
@@ -1190,13 +1266,13 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
 
     const userMap = new Map<string, any>(topUsers.map((u: any) => [u.id, u]));
 
-    if (currentUserId && !userMap.has(currentUserId)) {
+    if (activeUserId && !userMap.has(activeUserId)) {
       const currentUser = await prisma.user.findUnique({
-        where: { id: currentUserId },
+        where: { id: activeUserId },
         include: { profile: true },
       });
       if (currentUser) {
-        userMap.set(currentUserId, currentUser);
+        userMap.set(activeUserId, currentUser);
       }
     }
 
@@ -1239,7 +1315,7 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
         currentStreak,
         currentLevel,
         rank: 0,
-        isCurrentUser: currentUserId ? uid === currentUserId : false,
+        isCurrentUser: activeUserId ? uid === activeUserId : false,
       });
     }
 
@@ -1256,7 +1332,7 @@ export async function getLifetimeLeaderboard(currentUserId?: string): Promise<
     console.warn('[Leaderboard] getLifetimeLeaderboard fallback to community rankings:', err);
     return FALLBACK_LEADERBOARD.map((item) => ({
       ...item,
-      isCurrentUser: currentUserId ? item.userId === currentUserId : false,
+      isCurrentUser: activeUserId ? item.userId === activeUserId : false,
     }));
   }
 }
@@ -1274,8 +1350,17 @@ export async function reconcileProgressionData(options: { dryRun?: boolean; targ
     repaired: boolean;
   }>;
 }> {
+  // Enforce session requirement for progression reconciliation
+  const authLearner = await getAuthenticatedLearner();
+  const effectiveTargetId = options.targetUserId || authLearner.learnerId;
+
+  // Non-admins can only reconcile their own progression
+  if (effectiveTargetId !== authLearner.learnerId) {
+    throw new Error('FORBIDDEN: You can only reconcile your own progression records.');
+  }
+
   const isDryRun = options.dryRun !== false;
-  const where = options.targetUserId ? { id: options.targetUserId } : {};
+  const where = { id: effectiveTargetId };
   const users = await prisma.user.findMany({
     where,
     include: { profile: true },

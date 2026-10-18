@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode, useCa
 import {
   getCurrentUserSession,
   loginWithEmail,
+  loginAsDemoGuest,
   logoutSession,
   registerWithEmail,
   verifyEmailOtp,
@@ -24,7 +25,7 @@ interface AuthContextType {
   user: AuthUser | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (userData: Partial<AuthUser> & { email: string; name?: string }, token?: string) => void;
+  loginDemoGuest: () => Promise<AuthActionResult>;
   loginWithCredentials: (email: string, password: string) => Promise<AuthActionResult>;
   register: (name: string, email: string, password: string) => Promise<AuthActionResult>;
   verifyOtp: (email: string, otp: string) => Promise<AuthActionResult>;
@@ -42,7 +43,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   isAuthenticated: false,
   isLoading: true,
-  login: () => {},
+  loginDemoGuest: async () => ({ success: false }),
   loginWithCredentials: async () => ({ success: false }),
   register: async () => ({ success: false }),
   verifyOtp: async () => ({ success: false }),
@@ -195,29 +196,40 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   /**
-   * Legacy mock / quick demo login method.
+   * Secure, isolated Demo Guest authentication via server.
+   * Eliminates client-side bypasses and prevents impersonating real accounts.
    */
-  const login = (userData: Partial<AuthUser> & { email: string; name?: string }, token = 'session-active') => {
-    const userId = userData.id || (typeof window !== 'undefined' ? localStorage.getItem(LEGACY_USER_ID_KEY) : null) || crypto.randomUUID();
-    const displayName = userData.name || userData.email.split('@')[0] || 'Learner';
+  const loginDemoGuest = async (): Promise<AuthActionResult> => {
+    setIsLoading(true);
+    try {
+      const res = await loginAsDemoGuest();
 
-    const fullUser: AuthUser = {
-      id: userId,
-      name: displayName,
-      email: userData.email,
-      avatarUrl: userData.avatarUrl,
-      levelTitle: userData.levelTitle || 'Scholar Tier IV',
-    };
+      if (res.success && res.user) {
+        const authUser: AuthUser = {
+          id: res.user.id,
+          name: res.user.name,
+          email: res.user.email,
+          learnerId: res.user.learnerId,
+          levelTitle: 'Scholar Tier IV',
+        };
 
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(fullUser));
-      localStorage.setItem(TOKEN_STORAGE_KEY, token);
-      localStorage.setItem(LEGACY_USER_ID_KEY, userId);
-      localStorage.setItem(DISPLAY_NAME_KEY, displayName);
+        setUser(authUser);
+        setIsAuthenticated(true);
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser));
+          if (res.user.learnerId) {
+            localStorage.setItem(LEGACY_USER_ID_KEY, res.user.learnerId);
+          }
+          if (res.user.name) {
+            localStorage.setItem(DISPLAY_NAME_KEY, res.user.name);
+          }
+        }
+      }
+      return res;
+    } finally {
+      setIsLoading(false);
     }
-
-    setUser(fullUser);
-    setIsAuthenticated(true);
   };
 
   /**
@@ -244,7 +256,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         user,
         isAuthenticated,
         isLoading,
-        login,
+        loginDemoGuest,
         loginWithCredentials,
         register,
         verifyOtp,
